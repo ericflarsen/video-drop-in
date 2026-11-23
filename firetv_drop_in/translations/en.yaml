@@ -1,0 +1,4 @@
+configuration:
+  tv_adb:
+    name: Fire TV ADB address
+    description: Local Fire TV IP address and ADB port, for example 192.168.1.x:5555.

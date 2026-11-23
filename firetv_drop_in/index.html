@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Drop In</title>
+  <style>
+    :root { color-scheme: dark; font: 17px system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #10151b; color: #eef3f8; }
+    main { max-width: 880px; margin: auto; padding: 28px; }
+    h1 { font-size: clamp(1.8rem, 5vw, 3rem); margin: 0 0 10px; }
+    p { color: #bdc9d4; line-height: 1.5; }
+    button { border: 0; border-radius: 12px; padding: 16px 22px; margin: 8px 8px 8px 0; background: #367bf5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    button.secondary { background: #354354; }
+    button:disabled { opacity: .55; cursor: default; }
+    #status { padding: 14px 16px; min-height: 3.4em; border-radius: 10px; background: #1b2632; }
+    video { width: 100%; max-height: 68vh; background: #05080b; border-radius: 14px; object-fit: contain; }
+    #preview { width: min(220px, 35vw); position: fixed; right: 18px; bottom: 18px; border: 2px solid #526174; }
+    body.theater { background: #000; overflow: hidden; }
+    body.theater main { max-width: none; padding: 0; }
+    body.theater #title, body.theater #intro, body.theater #status,
+    body.theater .small, body.theater #caller, body.theater #enableAudio { display: none !important; }
+    body.theater #receiver { display: block; }
+    body.theater #remote { position: fixed; inset: 0; width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
+    #enterFullscreen { position: fixed; z-index: 5; inset: 0; width: 100vw; height: 100vh; margin: 0; border-radius: 0; background: #111923; display: grid; place-content: center; text-align: center; }
+    #enterFullscreen span { display: block; margin-top: 10px; font-size: .85em; font-weight: 400; color: #c6d1dc; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1 id="title">Video Drop In</h1>
+  <p id="intro">Start a local call. The TV will wake and open its receiver. Your camera and microphone start only after you choose to begin a call.</p>
+  <p id="status" role="status">Loading…</p>
+  <section id="caller" hidden>
+    <button id="startCall">Drop in with video and sound</button>
+    <button id="startVideoOnly" class="secondary">Video-only test</button>
+    <button id="wakeTv" class="secondary">Wake TV and open receiver</button>
+    <button id="hangup" class="secondary" disabled>End call</button>
+    <p class="small">Camera and microphone access are requested by this browser only after you start a call. Media is sent directly to the TV over your home network; the Pi does not relay or record it.</p>
+    <video id="preview" autoplay muted playsinline hidden></video>
+  </section>
+  <section id="receiver" hidden>
+    <button id="enterFullscreen" type="button">Preparing your call<span>One moment…</span></button>
+    <button id="enableAudio" class="secondary" hidden>Enable sound</button>
+    <video id="remote" autoplay playsinline></video>
+    <p class="small">Receiver only. This TV page does not use a camera or microphone.</p>
+  </section>
+</main>
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const role = location.pathname === '/tv' ? 'tv' : 'caller';
+  const room = params.get('room') || '__ROOM__';
+  const status = document.querySelector('#status');
+  const showStatus = text => { status.textContent = text; };
+  const caller = role === 'caller';
+  document.querySelector(caller ? '#caller' : '#receiver').hidden = false;
+  document.querySelector('#title').textContent = caller ? 'Video Drop In' : 'Connecting your call…';
+  showStatus(caller ? 'Ready. Choose Drop in or wake the TV receiver first.' : 'Receiver is listening for your call.');
+
+  let pc = null;
+  let stream = null;
+  let pollTimer = null;
+  let startingCall = false;
+  const pendingIce = [];
+  const remote = document.querySelector('#remote');
+  const preview = document.querySelector('#preview');
+
+  async function post(path, body) {
+    const response = await fetch(path, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({room}, body))
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || ('Request failed (' + response.status + ').'));
+    return data;
+  }
+
+  async function prepareTV() {
+    await post('/api/prepare-tv', {});
+  }
+
+  async function send(to, message) {
+    await post('/api/send', {to, message});
+  }
+
+  async function poll() {
+    try {
+      const peer = caller ? 'caller' : 'tv';
+      const url = '/api/poll?room=' + encodeURIComponent(room) + '&peer=' + peer;
+      const response = await fetch(url, {cache: 'no-store'});
+      const data = await response.json();
+      for (const message of data.messages || []) await handle(message);
+    } catch (error) {
+      showStatus('Signaling issue: ' + error.message);
+    }
+  }
+
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(poll, 350);
+    poll();
+  }
+
+  async function makePeer() {
+    if (pc) return pc;
+    pc = new RTCPeerConnection({iceServers: []});
+    pc.onicecandidate = event => {
+      if (event.candidate) send(caller ? 'tv' : 'caller', {type: 'ice', candidate: event.candidate}).catch(error => showStatus(error.message));
+    };
+    pc.onconnectionstatechange = () => showStatus('Call connection: ' + pc.connectionState);
+    pc.ontrack = event => {
+      if (caller) return;
+      remote.srcObject = event.streams[0] || new MediaStream([event.track]);
+      remote.play().then(() => showStatus('Connected. Live caller video and sound are playing on the TV.')).catch(async () => {
+        try {
+          await post('/api/play-tv', {});
+          document.querySelector('#enableAudio').hidden = true;
+          showStatus('Connected. Live caller video is playing on the TV.');
+        } catch (_) {
+          document.querySelector('#enableAudio').hidden = false;
+          showStatus('Connected. Select Enable sound if playback is blocked.');
+        }
+      });
+    };
+    return pc;
+  }
+
+  async function handle(message) {
+    if (message.type === 'offer' && !caller) {
+      const peer = await makePeer();
+      await peer.setRemoteDescription(message.description);
+      for (const item of pendingIce.splice(0)) await peer.addIceCandidate(item);
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      await send('caller', {type: 'answer', description: peer.localDescription});
+      showStatus('Answer sent. Connecting the call…');
+    } else if (message.type === 'answer' && caller && pc) {
+      await pc.setRemoteDescription(message.description);
+      for (const item of pendingIce.splice(0)) await pc.addIceCandidate(item);
+      showStatus('Answer received. Connecting the call…');
+    } else if (message.type === 'ice') {
+      if (!pc || !pc.remoteDescription) pendingIce.push(message.candidate);
+      else await pc.addIceCandidate(message.candidate);
+    } else if (message.type === 'hangup') {
+      cleanup();
+      showStatus('Call ended.');
+    }
+  }
+
+  function cleanup() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    if (pc) pc.close();
+    pc = null;
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    stream = null;
+    if (remote) remote.srcObject = null;
+    if (preview) { preview.srcObject = null; preview.hidden = true; }
+    document.querySelector('#hangup').disabled = true;
+    if (caller) {
+      document.querySelector('#startCall').disabled = false;
+      document.querySelector('#startVideoOnly').disabled = false;
+    }
+  }
+
+  if (caller) {
+    async function startCall(withAudio) {
+      if (startingCall || pc) return;
+      startingCall = true;
+      document.querySelector('#startCall').disabled = true;
+      document.querySelector('#startVideoOnly').disabled = true;
+      try {
+        showStatus('Waking the TV and opening its receiver…');
+        await prepareTV();
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+          throw new Error('The TV is ready. Camera and microphone need trusted HTTPS when this page is opened from a LAN address.');
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: withAudio,
+          video: {width: {ideal: 1280}, height: {ideal: 720}, frameRate: {ideal: 24, max: 30}}
+        });
+        preview.srcObject = stream;
+        preview.hidden = false;
+        const peer = await makePeer();
+        stream.getTracks().forEach(track => peer.addTrack(track, stream));
+        startPolling();
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        await send('tv', {type: 'offer', description: peer.localDescription});
+        document.querySelector('#hangup').disabled = false;
+        showStatus('Call sent. Connecting to the TV…');
+      } catch (error) {
+        cleanup();
+        showStatus(error.message);
+      } finally {
+        startingCall = false;
+      }
+    }
+    document.querySelector('#startCall').addEventListener('click', () => startCall(true));
+    document.querySelector('#startVideoOnly').addEventListener('click', () => startCall(false));
+    document.querySelector('#wakeTv').addEventListener('click', async () => {
+      const button = document.querySelector('#wakeTv');
+      button.disabled = true;
+      showStatus('Waking the TV and opening Silk…');
+      try {
+        await prepareTV();
+        showStatus('The TV is awake and the Silk receiver is open.');
+      } catch (error) {
+        showStatus(error.message);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    document.querySelector('#hangup').addEventListener('click', async () => {
+      try { await send('tv', {type: 'hangup'}); } catch (_) {}
+      cleanup();
+      showStatus('Call ended. The TV receiver remains open.');
+    });
+  } else {
+    startPolling();
+    const fullscreen = document.querySelector('#enterFullscreen');
+    fullscreen.addEventListener('click', async () => {
+      try { await document.documentElement.requestFullscreen(); } catch (_) {}
+      fullscreen.hidden = true;
+      document.body.classList.add('theater');
+    });
+    document.querySelector('#enableAudio').addEventListener('click', () => remote.play().catch(() => {}));
+  }
+  window.addEventListener('beforeunload', cleanup);
+})();
+</script>
+</body>
+</html>
