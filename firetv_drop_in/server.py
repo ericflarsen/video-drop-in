@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LAN-only caller page, WebRTC signaling, and Fire TV ADB orchestration."""
+"""Family call pages, WebRTC signaling, and Fire TV ADB orchestration."""
 
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,7 +21,7 @@ TV_ADB = OPTIONS.get("tv_adb", "").strip()
 PORT = 8765
 LOCK = threading.Lock()
 ADB_LOCK = threading.Lock()
-QUEUES = defaultdict(lambda: {"caller": [], "tv": []})
+QUEUES = defaultdict(lambda: {"caller": [], "tv": [], "mom": []})
 
 
 def adb(*args, timeout=20):
@@ -139,10 +139,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.serve_page("caller")
         if parsed.path == "/tv":
             return self.serve_page("tv")
+        if parsed.path == "/mom":
+            return self.serve_page("mom")
         if parsed.path == "/api/poll":
             query = parse_qs(parsed.query)
             peer = query.get("peer", [""])[0]
-            if query.get("room", [""])[0] != ROOM or peer not in ("caller", "tv"):
+            if query.get("room", [""])[0] != ROOM or peer not in ("caller", "tv", "mom"):
                 return self.send_json({"error": "unknown room or peer"}, 403)
             with LOCK:
                 messages = QUEUES[ROOM][peer]
@@ -177,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
             except (RuntimeError, subprocess.TimeoutExpired, FileNotFoundError) as error:
                 return self.send_json({"error": str(error)}, 502)
 
-        if data.get("to") not in ("caller", "tv") or not isinstance(data.get("message"), dict):
+        if data.get("to") not in ("caller", "tv", "mom") or not isinstance(data.get("message"), dict):
             return self.send_json({"error": "invalid signaling message"}, 400)
         with LOCK:
             QUEUES[ROOM][data["to"]].append(data["message"])
