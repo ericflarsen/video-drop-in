@@ -127,6 +127,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/healthz":
             return self.send_json({"ok": True})
+        static_files = {"/style.css": ("style.css", "text/css; charset=utf-8"),
+                        "/app.js": ("app.js", "text/javascript; charset=utf-8")}
+        if parsed.path in static_files:
+            filename, content_type = static_files[parsed.path]
+            body = (ROOT / filename).read_bytes()
+            self.send_headers(200, content_type, len(body))
+            self.wfile.write(body)
+            return
         if parsed.path in ("/", "/caller"):
             return self.serve_page("caller")
         if parsed.path == "/tv":

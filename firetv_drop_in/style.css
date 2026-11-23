@@ -1,0 +1,21 @@
+    :root { color-scheme: dark; font: 17px system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #10151b; color: #eef3f8; }
+    main { max-width: 880px; margin: auto; padding: 28px; }
+    h1 { font-size: clamp(1.8rem, 5vw, 3rem); margin: 0 0 10px; }
+    p { color: #bdc9d4; line-height: 1.5; }
+    button { border: 0; border-radius: 12px; padding: 16px 22px; margin: 8px 8px 8px 0; background: #367bf5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+    button.secondary { background: #354354; }
+    button:disabled { opacity: .55; cursor: default; }
+    #status { padding: 14px 16px; min-height: 3.4em; border-radius: 10px; background: #1b2632; }
+    video { width: 100%; max-height: 68vh; background: #05080b; border-radius: 14px; object-fit: contain; }
+    #preview { width: min(220px, 35vw); position: fixed; right: 18px; bottom: 18px; border: 2px solid #526174; }
+    body.theater { background: #000; overflow: hidden; }
+    body.theater main { max-width: none; padding: 0; }
+    body.theater #title, body.theater #intro, body.theater #status,
+    body.theater .small, body.theater #caller, body.theater #enableAudio { display: none !important; }
+    body.theater #receiver { display: block; }
+    body.theater #remote { position: fixed; inset: 0; width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
+    #enterFullscreen { position: fixed; z-index: 5; inset: 0; width: 100vw; height: 100vh; margin: 0; border-radius: 0; background: #111923; display: grid; place-content: center; text-align: center; }
+    #enterFullscreen span { display: block; margin-top: 10px; font-size: .85em; font-weight: 400; color: #c6d1dc; }
+    [hidden] { display: none !important; }
