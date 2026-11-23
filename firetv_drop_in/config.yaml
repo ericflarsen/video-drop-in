@@ -1,7 +1,7 @@
 name: Video Drop In
 slug: firetv_drop_in
 description: Wake a Fire TV and open a local WebRTC receiver
-version: "0.1.1"
+version: "0.1.2"
 arch:
   - aarch64
 startup: application
