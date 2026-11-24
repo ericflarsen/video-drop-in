@@ -12,7 +12,9 @@ optional Fire TV receiver.
 4. In the app configuration, enter the Fire TV ADB address, such as
    192.168.1.x:5555.
 5. Start the app and open the Home Assistant local address on port 8765 from
-   a device on the home network.
+   a device on the home network to check that it's running. For calls, use the
+   public Tailscale Funnel address: browsers only allow the camera and
+   microphone over HTTPS.
 
 The TV must authorize this app's ADB key once. If the first call reports that
 the device is unauthorized, wake the TV with its remote, accept the ADB
@@ -49,7 +51,9 @@ Mom's Call app is closed. Tapping it opens the app on the Answer screen.
 - **Android:** works from Chrome, installed or not.
 - Then tap **Ring my phone when family calls** once and allow notifications.
 
-Only starting a call rings Mom; joining a call already in progress does not.
+Only Mom's own sign-in (her link) can turn alerts on; a family member testing
+the Mom page doesn't see the button. Only starting a call rings Mom; joining a
+call already in progress does not.
 Alerts expire after a minute, so a phone that was offline won't ring late. The
 app keeps its push signing key and Mom's devices in its private data folder,
 and drops a device automatically when its browser unsubscribes. No call content
@@ -65,8 +69,9 @@ goes through the push service: only the caller's name.
 - **Mom's link.** A private link that signs Mom's phone in. To get it for a new
   phone, open `/api/mom-link` on the public page while signed in as family; it
   returns the path to add after the page address. Opening it once signs Mom's
-  phone in and removes the key from
-  the address, so the home-screen app keeps working. Mom's link can only answer;
+  phone in and removes the key from the address, so the home-screen app keeps
+  working. If the app ever shows "This link isn't working", paste the link into
+  the box on that screen. Mom's link can only answer;
   it cannot wake the TV or start a call. It is separate from the passphrase, so
   changing the passphrase does not affect it.
 - **Attempt limits.** Wrong passphrases and bad Mom links answer more slowly
@@ -85,6 +90,9 @@ Choose **Call Mom on the TV**. Mom's page
 shows who is calling. She can turn on her camera to see herself, turn on her
 microphone, then tap **Answer**. If she refreshes her page, she can tap Answer
 again to rejoin.
+
+If Mom has the page open on more than one device, all of them show the call.
+Answering on one takes the call; answering on another moves it there.
 
 ## Several callers
 

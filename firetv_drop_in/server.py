@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 import base64
 import hashlib
 import hmac
+import ipaddress
 import re
 import json
 import os
@@ -48,11 +49,16 @@ ROOM = secrets.token_urlsafe(18)
 LOCK = threading.Lock()
 ADB_LOCK = threading.Lock()
 LIMIT_LOCK = threading.Lock()
-QUEUES = defaultdict(list)  # "tv", "mom", or a caller's page id -> pending messages
+QUEUES = defaultdict(list)  # "tv", "mom:<page id>", or a caller's page id -> pending messages
 MAX_CALLERS = 4
 STALE_SECONDS = 45          # a caller page that stops polling this long has left
 MAX_QUEUE = 300
-CALL = {"active": False, "starting": False, "callers": {}}  # id -> {"name", "seen"}
+CALL = {"active": False, "starting": False, "callers": {}, "mom": None}  # callers: id -> {"name", "seen"}
+# Each open Mom page has its own id and queue. Call news goes to all of them; the
+# page that answered (CALL["mom"]) gets the call's signaling. Answering on another
+# page takes the call over.
+MOMS = {}  # Mom page id -> last poll time
+MAX_MOM_PAGES = 8
 PEER_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 YEAR = 365 * 24 * 3600
@@ -277,10 +283,39 @@ def push(key, message):
     del queue[:-MAX_QUEUE]
 
 
+def mom_queue(mid):
+    return "mom:" + mid
+
+
+def push_moms(message):
+    for mid in MOMS:
+        push(mom_queue(mid), dict(message))
+
+
 def push_roster():
     message = {"type": "roster", "callers": roster()}
-    for key in ("tv", "mom", *CALL["callers"]):
+    for key in ("tv", *CALL["callers"]):
         push(key, dict(message))
+    push_moms(message)
+
+
+def seen_mom(mid):
+    """Call with LOCK held. A new (or returning) Mom page starts with the current callers."""
+    if mid not in MOMS:
+        if len(MOMS) >= MAX_MOM_PAGES:
+            remove_mom(min(MOMS, key=MOMS.get))
+        QUEUES[mom_queue(mid)] = [{"type": "roster", "callers": roster()}]
+    MOMS[mid] = time.time()
+
+
+def remove_mom(mid):
+    """Call with LOCK held."""
+    MOMS.pop(mid, None)
+    QUEUES.pop(mom_queue(mid), None)
+    if CALL["mom"] == mid:
+        CALL["mom"] = None
+        for key in CALL["callers"]:
+            push(key, {"type": "hangup", "from": "mom"})
 
 
 def remove_caller(cid):
@@ -289,14 +324,17 @@ def remove_caller(cid):
         return
     del CALL["callers"][cid]
     QUEUES.pop(cid, None)
-    for key in ("tv", "mom", *CALL["callers"]):
+    for key in ("tv", *CALL["callers"]):
         push(key, {"type": "left", "from": cid})
+    push_moms({"type": "left", "from": cid})
     if CALL["callers"]:
         push_roster()
     else:
         CALL["active"] = False
+        CALL["mom"] = None
         QUEUES["tv"] = [{"type": "hangup"}]
-        QUEUES["mom"] = [{"type": "roster", "callers": []}, {"type": "hangup"}]
+        for mid in MOMS:
+            QUEUES[mom_queue(mid)] = [{"type": "roster", "callers": []}, {"type": "hangup"}]
         print("Call ended.", flush=True)
 
 
@@ -307,6 +345,9 @@ def sweep():
         if now - info["seen"] > STALE_SECONDS:
             print(f"{info['name'] or 'A caller'} stopped responding and was removed.", flush=True)
             remove_caller(cid)
+    for mid, seen in list(MOMS.items()):
+        if now - seen > STALE_SECONDS:
+            remove_mom(mid)
 
 
 def add_caller(cid, name):
@@ -417,7 +458,7 @@ class Handler(BaseHTTPRequestHandler):
         if family and hmac.compare_digest(jar.get("vdi_family", ""), family):
             roles.update(("caller", "mom"))  # family may open Mom's page to test it
         if hmac.compare_digest(jar.get("vdi_mom", ""), mom_token()):
-            roles.add("mom")
+            roles.update(("mom", "mom_device"))  # her own sign-in, not a family member testing
         if room and hmac.compare_digest(room, ROOM):
             roles.add("tv")
         return roles
@@ -493,9 +534,23 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("invalid request size")
         return json.loads(self.rfile.read(size))
 
-    @staticmethod
-    def cookie(name, value, http_only=True):
-        parts = [f"{name}={value}", "Path=/", f"Max-Age={YEAR}", "Secure", "SameSite=Lax"]
+    def over_https(self):
+        """False only for a plain-http home-network address (an IP, .local, or bare name)."""
+        if self.headers.get("X-Forwarded-Proto", "").lower() == "https":
+            return True
+        host = self.headers.get("Host", "")
+        host = host[1:].split("]")[0] if host.startswith("[") else host.rsplit(":", 1)[0]
+        try:
+            ipaddress.ip_address(host)
+            return False
+        except ValueError:
+            return "." in host and not host.endswith(".local")
+
+    def cookie(self, name, value, http_only=True):
+        # Browsers drop Secure cookies on plain http, which would loop the sign-in.
+        parts = [f"{name}={value}", "Path=/", f"Max-Age={YEAR}", "SameSite=Lax"]
+        if self.over_https():
+            parts.append("Secure")
         if http_only:
             parts.append("HttpOnly")
         return ("Set-Cookie", "; ".join(parts))
@@ -569,7 +624,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"path": "/mom/" + MOM_KEY})
 
         if parsed.path == "/api/push/key":
-            if "mom" not in self.roles():
+            if "mom_device" not in self.roles():
                 return self.send_json({"error": "not signed in"}, 403)
             return self.send_json({"key": VAPID_PUBLIC or None})
 
@@ -587,12 +642,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "not signed in"}, 403)
             with LOCK:
                 sweep()
+                pid = query.get("id", [""])[0]
                 if peer == "caller":
-                    cid = query.get("id", [""])[0]
-                    if cid not in CALL["callers"]:
+                    if pid not in CALL["callers"]:
                         return self.send_json({"messages": [], "gone": True})
-                    CALL["callers"][cid]["seen"] = time.time()
-                    key = cid
+                    CALL["callers"][pid]["seen"] = time.time()
+                    key = pid
+                elif peer == "mom":
+                    if not PEER_ID.match(pid):
+                        return self.send_json({"error": "invalid page id"}, 400)
+                    seen_mom(pid)
+                    key = mom_queue(pid)
                 else:
                     key = peer
                 messages = QUEUES[key]
@@ -636,17 +696,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": True}, extra=(self.cookie("vdi_name", quote(name), http_only=False),))
 
         if path == "/api/push/subscribe":
-            if "mom" not in roles:
+            if "mom_device" not in roles:
                 return self.send_json({"error": "not signed in"}, 403)
             if VAPID is None:
                 return self.send_json({"error": "Call alerts are not available."}, 503)
             sub = clean_subscription(data.get("subscription"))
             if not sub:
                 return self.send_json({"error": "That browser's alerts are not supported."}, 400)
-            # Apple wants a contact URL in the push signature; this page's own address works.
-            origin = self.headers.get("Origin", "")
-            if origin.startswith("https://") and len(origin) < 200:
-                sub["contact"] = origin
+            # Apple wants a contact URL in the push signature; this page's own address
+            # works, without a port (the signing library rejects one, e.g. Funnel's :8443).
+            origin = urlparse(self.headers.get("Origin", ""))
+            if origin.scheme == "https" and origin.hostname and "." in origin.hostname and len(origin.hostname) < 200:
+                sub["contact"] = "https://" + origin.hostname
             with PUSH_LOCK:
                 subs = [s for s in load_subs() if s["endpoint"] != sub["endpoint"]]
                 subs.append(sub)
@@ -737,6 +798,24 @@ class Handler(BaseHTTPRequestHandler):
                 allowed = cid in callers and (to in ("tv", "mom") or (to in callers and to != cid))
                 message["from"] = cid
                 message["fromName"] = callers.get(cid, {}).get("name", "")
+                if allowed and to == "mom":
+                    # Only the Mom page that answered gets the call's signaling.
+                    if CALL["mom"] in MOMS:
+                        push(mom_queue(CALL["mom"]), message)
+                    return self.send_json({"ok": True})
+            elif sender == "mom":
+                if not PEER_ID.match(cid) or cid not in MOMS:
+                    return self.send_json({"error": "this page is not connected"}, 409)
+                allowed = to in callers
+                # ICE can arrive before its offer, so either one means this page answered.
+                if allowed and message.get("type") in ("offer", "ice") and CALL["mom"] != cid:
+                    # Answering here takes the call over from Mom's other page.
+                    if CALL["mom"] in MOMS:
+                        push(mom_queue(CALL["mom"]), {"type": "taken"})
+                    CALL["mom"] = cid
+                elif CALL["mom"] != cid:
+                    return self.send_json({"error": "answered on another device"}, 409)
+                message["from"] = "mom"
             else:
                 allowed = to in callers
                 message["from"] = sender

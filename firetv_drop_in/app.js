@@ -12,12 +12,24 @@
   // ---------- Screens that are not part of a call ----------
   const NOTICES = {
     setup: ['Almost ready', 'Set a family passphrase in the Video Drop In app settings in Home Assistant, then reload this page.'],
-    nolink: ['This link isn’t working', 'Ask your family to text you a new call link.']
+    nolink: ['This link isn’t working', 'Ask your family for your call link, then paste it here.']
   };
   if (NOTICES[view]) {
     document.body.classList.add(view === 'nolink' ? 'mom' : 'caller');
     [titleEl.textContent, introEl.textContent] = NOTICES[view];
     showStatus('');
+    if (view === 'nolink') {
+      // Works inside the Home Screen app too, which has no address bar.
+      const form = document.querySelector('#linkForm');
+      form.hidden = false;
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        const text = form.link.value.trim();
+        const match = text.match(/\/mom\/([A-Za-z0-9_-]+)/) || text.match(/^([A-Za-z0-9_-]{16,})$/);
+        if (!match) return showStatus('That doesn’t look like a call link. Paste the whole link.');
+        location.href = '/mom/' + match[1];
+      });
+    }
     return;
   }
   if (view === 'login') {
@@ -58,7 +70,7 @@
   const mom = role === 'mom';
   const room = document.body.dataset.room || '';
   const randomId = () => (crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''));
-  const myId = caller ? randomId() : role;
+  const myId = tv ? 'tv' : randomId();  // each Mom page has its own id too
   const ICE = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
   const MAX_CALLERS = 4;
 
@@ -602,6 +614,7 @@
 
     async function applyRoster(list) {
       roster = list;
+      if (roster.length && document.visibilityState === 'visible') clearCallAlerts();
       if (!roster.length) {
         if (answered) endCall('Call ended.');
         setState('waiting');
@@ -631,13 +644,23 @@
       } else if (message.type === 'hangup') {
         endCall('Call ended.');
         await applyRoster([]);
+      } else if (message.type === 'taken') {
+        // Mom answered on her other device.
+        endCall('You answered on another device.');
+        await stopMedia();
+        setState(roster.length ? 'incoming' : 'waiting');
       }
     };
+    async function stopMedia() {
+      if (cameraOn) await toggle('video');
+      if (micOn) await toggle('audio');
+    }
 
     answerBtn.addEventListener('click', async () => {
       if (answered || !roster.length) return;
       answered = true;
       answerBtn.disabled = true;
+      clearCallAlerts();
       showStatus('Connecting…');
       try {
         for (const item of roster) await offerTo(item);
@@ -652,8 +675,7 @@
     hangupBtn.addEventListener('click', async () => {
       for (const key of peers.keys()) await send(key, {type: 'hangup'}).catch(() => {});
       endCall('You hung up.');
-      if (cameraOn) await toggle('video');
-      if (micOn) await toggle('audio');
+      await stopMedia();
       setState(roster.length ? 'incoming' : 'waiting');
     });
     document.querySelector('#momCamera').addEventListener('click', () => toggle('video'));

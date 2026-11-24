@@ -34,6 +34,13 @@
   <!-- Shown when a page can't be used yet -->
   <section id="notice" hidden></section>
 
+  <!-- Mom's link, pasted in when her page has no sign-in -->
+  <form id="linkForm" class="form" hidden>
+    <label for="linkInput">Your call link</label>
+    <input id="linkInput" name="link" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the link here" required>
+    <button class="btn btn-primary" type="submit">Open</button>
+  </form>
+
   <!-- Family caller page -->
   <section id="caller" hidden>
     <div class="stage">
