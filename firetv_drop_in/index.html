@@ -37,8 +37,8 @@
   <!-- Family caller page -->
   <section id="caller" hidden>
     <div class="stage">
-      <video id="callerRemote" autoplay playsinline hidden></video>
-      <p class="stage-empty">Mom’s camera shows here after she answers on her phone.</p>
+      <div id="tiles" class="call-tiles"></div>
+      <p class="stage-empty">Mom and anyone else on the call show here.</p>
       <div id="previewPanel" class="self-preview" hidden>
         <div id="previewDragHandle" class="preview-bar">
           <span>You</span>
@@ -51,13 +51,13 @@
     <div class="caller-controls">
       <button id="startCall" class="btn btn-primary" type="button">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v11H3zM8 21h8M12 17v4"/></svg>
-        Call Mom on the TV
+        <span class="label">Call Mom on the TV</span>
       </button>
-      <button id="hangup" class="btn btn-danger" type="button" disabled>
+      <button id="hangup" class="btn btn-danger" type="button">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 14c5-4 13-4 18 0l-2 3-4-1v-3c-2-.6-4-.6-6 0v3l-4 1z"/></svg>
         Hang up
       </button>
-      <p class="hint warn">This wakes Mom’s TV and turns it on.</p>
+      <p id="tvHint" class="hint warn">This wakes Mom’s TV and turns it on.</p>
       <button id="shareMomLink" class="btn btn-outline" type="button">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4z"/></svg>
         Text Mom her answer link
@@ -68,14 +68,13 @@
 
     <ol class="steps">
       <li>Text Mom her answer link (once is enough; she can save it to her home screen).</li>
-      <li>Call Mom on the TV. You show up on her TV.</li>
+      <li>Call Mom on the TV, or join if someone else already has. Up to 4 family members can be on her TV at once.</li>
       <li>Mom taps <b>Answer</b> on her phone so you can see and hear her.</li>
     </ol>
   </section>
 
   <!-- Mom's phone page -->
   <section id="mom" hidden>
-    <video id="momRemote" autoplay playsinline hidden></video>
 
     <div id="momPreviewPanel" class="mom-preview">
       <video id="momPreview" autoplay muted playsinline hidden></video>
@@ -115,7 +114,8 @@
   <section id="receiver" hidden>
     <button id="enterFullscreen" type="button">Preparing your call<span>One moment…</span></button>
     <button id="enableAudio" class="btn btn-outline" hidden>Enable sound</button>
-    <video id="remote" autoplay playsinline></video>
+    <div id="tvTiles" class="tv-tiles"></div>
+    <p id="toast" class="toast" role="status" hidden></p>
     <p class="small">Receiver only. This TV page does not use a camera or microphone.</p>
   </section>
 </main>

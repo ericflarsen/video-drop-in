@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
 import hashlib
 import hmac
+import re
 import json
 import os
 import secrets
@@ -38,7 +39,12 @@ ROOM = secrets.token_urlsafe(18)
 LOCK = threading.Lock()
 ADB_LOCK = threading.Lock()
 LIMIT_LOCK = threading.Lock()
-QUEUES = defaultdict(lambda: {"caller": [], "tv": [], "mom": []})
+QUEUES = defaultdict(list)  # "tv", "mom", or a caller's page id -> pending messages
+MAX_CALLERS = 4
+STALE_SECONDS = 45          # a caller page that stops polling this long has left
+MAX_QUEUE = 300
+CALL = {"active": False, "starting": False, "callers": {}}  # id -> {"name", "seen"}
+PEER_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 YEAR = 365 * 24 * 3600
 HOUR = 3600
@@ -139,6 +145,54 @@ def in_quiet_hours():
     return start <= current < end if start < end else current >= start or current < end
 
 
+def roster():
+    return [{"id": cid, "name": info["name"]} for cid, info in CALL["callers"].items()]
+
+
+def push(key, message):
+    queue = QUEUES[key]
+    queue.append(message)
+    del queue[:-MAX_QUEUE]
+
+
+def push_roster():
+    message = {"type": "roster", "callers": roster()}
+    for key in ("tv", "mom", *CALL["callers"]):
+        push(key, dict(message))
+
+
+def remove_caller(cid):
+    """Call with LOCK held. Ends the call when the last caller leaves."""
+    if cid not in CALL["callers"]:
+        return
+    del CALL["callers"][cid]
+    QUEUES.pop(cid, None)
+    for key in ("tv", "mom", *CALL["callers"]):
+        push(key, {"type": "left", "from": cid})
+    if CALL["callers"]:
+        push_roster()
+    else:
+        CALL["active"] = False
+        QUEUES["tv"] = [{"type": "hangup"}]
+        QUEUES["mom"] = [{"type": "roster", "callers": []}, {"type": "hangup"}]
+        print("Call ended.", flush=True)
+
+
+def sweep():
+    """Call with LOCK held."""
+    now = time.time()
+    for cid, info in list(CALL["callers"].items()):
+        if now - info["seen"] > STALE_SECONDS:
+            print(f"{info['name'] or 'A caller'} stopped responding and was removed.", flush=True)
+            remove_caller(cid)
+
+
+def add_caller(cid, name):
+    """Call with LOCK held."""
+    CALL["callers"][cid] = {"name": name or "Family", "seen": time.time()}
+    push_roster()
+
+
 def adb(*args, timeout=20):
     """Run ADB with persistent home storage for its host key."""
     env = os.environ.copy()
@@ -169,6 +223,10 @@ def adb_device(*args):
 
 def prepare_tv():
     """Connect ADB, establish TV-local receiver routing, wake, and open Silk."""
+    if os.environ.get("VDI_FAKE_TV") == "1":
+        # Local testing only: no ADB, just print where a receiver page would open.
+        print(f"FAKE TV: receiver at http://localhost:{PORT}/tv?room={ROOM}", flush=True)
+        return
     if not TV_ADB:
         raise RuntimeError("Set the Fire TV ADB address in Video Drop In app configuration.")
     with ADB_LOCK:
@@ -387,20 +445,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "sign in first"}, 403)
             return self.send_json({"path": "/mom/" + MOM_KEY})
 
+        if parsed.path == "/api/state":
+            roles = self.roles()
+            if not roles & {"caller", "mom"}:
+                return self.send_json({"error": "not signed in"}, 403)
+            with LOCK:
+                sweep()
+                return self.send_json({"active": CALL["active"], "callers": roster(), "max": MAX_CALLERS})
+
         if parsed.path == "/api/poll":
             peer = query.get("peer", [""])[0]
             if peer not in self.roles(query.get("room", [""])[0]):
                 return self.send_json({"error": "not signed in"}, 403)
             with LOCK:
-                messages = QUEUES["call"][peer]
-                QUEUES["call"][peer] = []
+                sweep()
+                if peer == "caller":
+                    cid = query.get("id", [""])[0]
+                    if cid not in CALL["callers"]:
+                        return self.send_json({"messages": [], "gone": True})
+                    CALL["callers"][cid]["seen"] = time.time()
+                    key = cid
+                else:
+                    key = peer
+                messages = QUEUES[key]
+                QUEUES[key] = []
             return self.send_json({"messages": messages})
 
         return self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ("/api/login", "/api/name", "/api/send", "/api/prepare-tv", "/api/play-tv"):
+        if path not in ("/api/login", "/api/name", "/api/send", "/api/start", "/api/join",
+                        "/api/leave", "/api/play-tv"):
             return self.send_json({"error": "not found"}, 404)
         try:
             data = self.read_json()
@@ -431,34 +507,66 @@ class Handler(BaseHTTPRequestHandler):
             name = " ".join(str(data.get("name", "")).split())[:40]
             return self.send_json({"ok": True}, extra=(self.cookie("vdi_name", quote(name), http_only=False),))
 
-        if path == "/api/prepare-tv":
+        cid = str(data.get("id", ""))
+
+        if path in ("/api/start", "/api/join", "/api/leave"):
             if "caller" not in roles:
                 return self.send_json({"error": "sign in first"}, 403)
-            name = self.caller_name() or "Someone"
-            now = time.time()
-            with LIMIT_LOCK:
-                prune(WAKES, now)
-                if len(WAKES) >= MAX_WAKES_PER_HOUR:
-                    return self.send_json({"error": (
-                        f"The TV has been woken {len(WAKES)} times in the last hour. "
-                        "Please wait a bit before calling again."
-                    )}, 429)
-            quiet = in_quiet_hours()
-            if quiet and not data.get("urgent"):
-                return self.send_json({
-                    "quiet": True,
-                    "error": f"It is quiet hours ({QUIET_START} to {QUIET_END}). Mom may be asleep.",
-                }, 409)
-            with LIMIT_LOCK:
-                WAKES.append(now)
-            print(f"{name} is waking the TV{' during quiet hours' if quiet else ''}.", flush=True)
+            if not PEER_ID.match(cid):
+                return self.send_json({"error": "invalid page id"}, 400)
+            name = self.caller_name()
+
+        if path == "/api/leave":
+            with LOCK:
+                remove_caller(cid)
+            return self.send_json({"ok": True})
+
+        if path == "/api/join" or path == "/api/start":
+            with LOCK:
+                sweep()
+                if CALL["active"] or path == "/api/join":
+                    if not CALL["active"]:
+                        return self.send_json({"error": "No call right now."}, 409)
+                    if cid not in CALL["callers"] and len(CALL["callers"]) >= MAX_CALLERS:
+                        return self.send_json({"error": f"The call is full ({MAX_CALLERS} callers)."}, 409)
+                    add_caller(cid, name)
+                    print(f"{name or 'Someone'} joined the call.", flush=True)
+                    return self.send_json({"callers": roster()})
+                if CALL["starting"]:
+                    return self.send_json({"error": "Someone is starting a call. Try Join in a moment."}, 409)
+                now = time.time()
+                with LIMIT_LOCK:
+                    prune(WAKES, now)
+                    if len(WAKES) >= MAX_WAKES_PER_HOUR:
+                        return self.send_json({"error": (
+                            f"The TV has been woken {len(WAKES)} times in the last hour. "
+                            "Please wait a bit before calling again."
+                        )}, 429)
+                quiet = in_quiet_hours()
+                if quiet and not data.get("urgent"):
+                    return self.send_json({
+                        "quiet": True,
+                        "error": f"It is quiet hours ({QUIET_START} to {QUIET_END}). Mom may be asleep.",
+                    }, 409)
+                with LIMIT_LOCK:
+                    WAKES.append(now)
+                CALL["starting"] = True
+                QUEUES.clear()
+            who = name or "Someone"
+            print(f"{who} is waking the TV{' during quiet hours' if quiet else ''}.", flush=True)
             if quiet:
-                notify("Video Drop In: quiet-hours call", f"{name} woke Mom's TV during quiet hours.")
+                notify("Video Drop In: quiet-hours call", f"{who} woke Mom's TV during quiet hours.")
             try:
                 prepare_tv()
-                return self.send_json({"ok": True, "tv": "awake; Silk receiver opened"})
             except (RuntimeError, subprocess.TimeoutExpired, FileNotFoundError) as error:
+                with LOCK:
+                    CALL["starting"] = False
                 return self.send_json({"error": str(error)}, 502)
+            with LOCK:
+                CALL["starting"] = False
+                CALL["active"] = True
+                add_caller(cid, name)
+            return self.send_json({"callers": roster()})
 
         if path == "/api/play-tv":
             if "tv" not in roles:
@@ -471,24 +579,23 @@ class Handler(BaseHTTPRequestHandler):
             except (RuntimeError, subprocess.TimeoutExpired, FileNotFoundError) as error:
                 return self.send_json({"error": str(error)}, 502)
 
-        # /api/send: signaling between the three pages.
-        sender, to, message = data.get("peer"), data.get("to"), data.get("message")
-        routes = {"caller": ("tv", "mom"), "tv": ("caller",), "mom": ("caller",)}
-        if sender not in roles or to not in routes.get(sender, ()) or not isinstance(message, dict):
+        # /api/send: signaling between pages, addressed by page id.
+        sender, to, message = data.get("peer"), str(data.get("to", "")), data.get("message")
+        if sender not in roles or not isinstance(message, dict):
             return self.send_json({"error": "invalid signaling message"}, 403)
-        if sender == "caller":
-            message["from"] = self.caller_name()  # set by the server, not the page
         with LOCK:
-            if to == "caller" and message.get("type") == "join":
-                # A newly opened or refreshed Mom page requests a fresh offer; discard stale messages.
-                QUEUES["call"]["mom"] = []
-                QUEUES["call"]["caller"] = [
-                    item for item in QUEUES["call"]["caller"]
-                    if item.get("channel") != "mom" and item.get("type") != "join"
-                ]
-            QUEUES["call"][to].append(message)
+            callers = CALL["callers"]
+            if sender == "caller":
+                allowed = cid in callers and (to in ("tv", "mom") or (to in callers and to != cid))
+                message["from"] = cid
+                message["fromName"] = callers.get(cid, {}).get("name", "")
+            else:
+                allowed = to in callers
+                message["from"] = sender
+            if not allowed:
+                return self.send_json({"error": "that page is not on the call"}, 409)
+            push(to, message)
         return self.send_json({"ok": True})
-
 
 if __name__ == "__main__":
     os.environ["HOME"] = str(CONFIG)

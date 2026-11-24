@@ -44,9 +44,18 @@ p { margin: 0; }
 
 /* ---------- Family caller page ---------- */
 .stage { position: relative; aspect-ratio: 16 / 10; background: #05080b; border-radius: 18px; overflow: hidden; display: grid; place-items: center; }
-.stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .stage-empty { color: #6f7e8d; text-align: center; padding: 0 24px; font-size: .95rem; }
-#callerRemote:not([hidden]) + .stage-empty { display: none; }
+.stage.has-tiles .stage-empty { display: none; }
+.call-tiles { position: absolute; inset: 0; display: grid; gap: 4px; }
+
+/* A person's video. Used on the family page and the TV. */
+.tile { position: relative; min-width: 0; min-height: 0; background: #0b1016; border-radius: 10px; overflow: hidden; }
+.tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.tile-name { position: absolute; left: 8px; bottom: 8px; padding: 3px 10px; border-radius: 8px; background: #000a; color: #fff; font-size: .82rem; font-weight: 600; }
+.tile-off { display: none; position: absolute; inset: 0; place-items: center; color: #8696a7; font-size: .9rem; }
+/* Mom with her camera off: keep the video element playing her audio, just hide the picture. */
+.tile.camera-off video { visibility: hidden; }
+.tile.camera-off .tile-off { display: grid; }
 .caller-controls { display: grid; gap: 10px; margin-top: 16px; }
 /* Only one of Call / Hang up shows at a time. */
 #hangup { display: none; }
@@ -96,12 +105,14 @@ body.mom #intro { text-align: center; font-size: 1.1rem; }
 
 /* ---------- Fire TV receiver (unchanged behavior) ---------- */
 .small { font-size: .9rem; color: var(--muted); }
-#remote { width: 100%; max-height: 68vh; background: #05080b; border-radius: 14px; object-fit: contain; }
 body.theater { background: #000; overflow: hidden; }
 body.theater main { max-width: none; padding: 0; }
 body.theater .top, body.theater .small, body.theater #caller, body.theater #mom, body.theater #enableAudio { display: none !important; }
 body.theater #receiver { display: block; }
-body.theater #remote { position: fixed; inset: 0; width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
+.tv-tiles { display: grid; gap: 6px; width: 100%; height: 68vh; }
+body.theater .tv-tiles { position: fixed; inset: 0; width: 100vw; height: 100vh; padding: 6px; background: #000; transition: all .3s ease; }
+body.theater .tv-tiles .tile-name { font-size: 1.3rem; left: 16px; bottom: 16px; padding: 6px 16px; }
+.toast { position: fixed; z-index: 30; top: 32px; left: 50%; transform: translateX(-50%); padding: 14px 28px; border-radius: 999px; background: #000c; color: #fff; font-size: 1.6rem; font-weight: 700; }
 #enterFullscreen { position: fixed; z-index: 5; inset: 0; width: 100vw; height: 100vh; margin: 0; border: 0; border-radius: 0; background: #111923; color: #fff; font: inherit; font-size: 1.6rem; font-weight: 700; display: grid; place-content: center; text-align: center; }
 #enterFullscreen span { display: block; margin-top: 10px; font-size: .85em; font-weight: 400; color: #c6d1dc; }
 

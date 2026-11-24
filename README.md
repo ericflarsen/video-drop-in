@@ -64,15 +64,32 @@ Signaling uses Python's standard library; the browser provides WebRTC.
 
 Text Mom her answer link once, then choose **Call Mom on the TV**. Mom's page
 shows who is calling. She can turn on her camera to see herself, turn on her
-microphone, then tap **Answer**. Her camera and microphone go back to the
-caller; the caller's video remains on the TV. If she refreshes her page, she can
-tap Answer again to rejoin without the caller restarting the TV call.
+microphone, then tap **Answer**. If she refreshes her page, she can tap Answer
+again to rejoin.
 
-The `/mom` page includes Android home-screen app metadata and icons. WebRTC uses
-a public STUN server to help browsers find a direct path. TURN relay is not
-configured, so some restrictive networks may still block calls. Multiple callers
-are a future feature. Echo from TV audio being picked up by Mom's separate phone
-is an open issue; browser echo cancellation may not remove it fully and needs a
+## Several callers
+
+Up to 4 family members can be on a call. The first caller wakes the TV; anyone
+else who opens the family page sees **Join the call**, which never wakes the TV
+again or counts toward the wake limit. A 5th caller sees that the call is full.
+
+- **TV:** 1 to 3 callers side by side, 4 as a 2×2 grid, each with a name. A
+  soft chime and a "Sarah joined" banner mark each new caller.
+- **Family page:** each caller sees and hears Mom and every other caller. Mom's
+  tile is largest while her camera is on.
+- **Mom:** hears everyone through the TV; her camera and microphone go to every
+  caller, including people who join after she answers.
+- The call ends for the TV and Mom when the last caller hangs up. A caller page
+  that stops responding for 45 seconds is removed.
+
+Media never passes through the Home Assistant host. Every page connects directly
+to every other page (a mesh); the host only introduces them. Each caller uploads
+one copy of their video per other page, so videos are scaled down as the call
+grows (about 720p alone, 480p with 2 or 3 callers, 360p with 4).
+
+WebRTC uses a public STUN server to help browsers find a direct path. TURN relay
+is not configured, so some restrictive networks may still block calls. Echo from
+TV audio being picked up by Mom's separate phone is an open issue and needs a
 real-world check.
 
 ## Later consideration

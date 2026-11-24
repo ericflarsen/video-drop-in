@@ -3,12 +3,13 @@
   const titleEl = document.querySelector('#title');
   const introEl = document.querySelector('#intro');
   const statusEl = document.querySelector('#status');
+  const showStatus = text => { statusEl.textContent = text; };
   const readCookie = name => {
     const match = document.cookie.split('; ').find(item => item.startsWith(name + '='));
     return match ? decodeURIComponent(match.slice(name.length + 1)) : '';
   };
 
-  // Screens that are not part of a call.
+  // ---------- Screens that are not part of a call ----------
   const NOTICES = {
     setup: ['Almost ready', 'Set a family passphrase in the Video Drop In app settings in Home Assistant, then reload this page.'],
     nolink: ['This link isn’t working', 'Ask your family to text you a new call link.']
@@ -16,7 +17,7 @@
   if (NOTICES[view]) {
     document.body.classList.add(view === 'nolink' ? 'mom' : 'caller');
     [titleEl.textContent, introEl.textContent] = NOTICES[view];
-    statusEl.textContent = '';
+    showStatus('');
     return;
   }
   if (view === 'login') {
@@ -24,14 +25,14 @@
     document.querySelector('#login').hidden = false;
     titleEl.textContent = 'Call Mom';
     introEl.textContent = 'Sign in with the family passphrase.';
-    statusEl.textContent = '';
+    showStatus('');
     const form = document.querySelector('#loginForm');
     const submit = document.querySelector('#loginSubmit');
     document.querySelector('#loginName').value = readCookie('vdi_name');
     form.addEventListener('submit', async event => {
       event.preventDefault();
       submit.disabled = true;
-      statusEl.textContent = 'Checking…';
+      showStatus('Checking…');
       try {
         const response = await fetch('/api/login', {
           method: 'POST',
@@ -42,7 +43,7 @@
         if (!response.ok) throw new Error(data.error || 'Sign-in failed.');
         location.reload();
       } catch (error) {
-        statusEl.textContent = error.message;
+        showStatus(error.message);
         form.passphrase.value = '';
         submit.disabled = false;
       }
@@ -50,72 +51,195 @@
     return;
   }
 
+  // ---------- Shared call plumbing ----------
   const role = view === 'tv' ? 'tv' : view === 'mom' ? 'mom' : 'caller';
-  const room = document.body.dataset.room;
   const caller = role === 'caller';
   const tv = role === 'tv';
   const mom = role === 'mom';
-  const peerConfig = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
-  const showStatus = text => { statusEl.textContent = text; };
+  const room = document.body.dataset.room || '';
+  const randomId = () => (crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''));
+  const myId = caller ? randomId() : role;
+  const ICE = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
+  const MAX_CALLERS = 4;
 
   document.querySelector(caller ? '#caller' : mom ? '#mom' : '#receiver').hidden = false;
   document.body.classList.add(role);
-  titleEl.textContent = caller ? 'Call Mom' : mom ? 'No call right now' : 'Connecting your call…';
-  introEl.textContent = caller ? '' : mom ? '' : 'Your family is connecting to the TV receiver.';
-  showStatus(caller ? 'Ready to call.' : mom ? '' : 'Receiver is listening for your call.');
 
-  const MOM_STATES = {
-    waiting: ['No call right now', 'Keep this page open. When your family calls, a green Answer button appears here.'],
-    incoming: ['Your family is calling', 'They are on your TV. Turn on your camera and microphone if you like, then tap Answer.'],
-    incall: ['You’re on the call', 'Your family can see and hear you while your camera and microphone are on.']
-  };
-  let callerFrom = '';
-  function setMomState(state) {
-    if (!mom) return;
-    document.body.dataset.momState = state;
-    [titleEl.textContent, introEl.textContent] = MOM_STATES[state];
-    if (state === 'incoming' && callerFrom) titleEl.textContent = callerFrom + ' is calling';
-    if (state === 'incall' && callerFrom) titleEl.textContent = 'You’re talking with ' + callerFrom;
+  async function post(path, body) {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({room, peer: role, id: myId}, body))
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const error = new Error(data.error || ('Request failed (' + response.status + ').'));
+      error.data = data;
+      throw error;
+    }
+    return data;
   }
-  setMomState('waiting');
-  function setInCall(on) {
-    document.body.classList.toggle('in-call', on);
+  async function getJSON(path) {
+    const response = await fetch(path, {cache: 'no-store'});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || ('Request failed (' + response.status + ').'));
+    return data;
+  }
+  const send = (to, message) => post('/api/send', {to, message});
+
+  function joinNames(names) {
+    if (names.length <= 1) return names[0] || 'Your family';
+    return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
   }
 
-  let pc = null;
-  let momPc = null;
-  let stream = null;
+  // One RTCPeerConnection per other page, keyed by page id ('tv', 'mom', or a caller's id).
+  const peers = new Map();
+  function newPeer(key, name, onTrack) {
+    closePeer(key);
+    const pc = new RTCPeerConnection(ICE);
+    const entry = {key, name, pc, pending: [], stream: new MediaStream()};
+    pc.onicecandidate = event => {
+      if (event.candidate) send(key, {type: 'ice', candidate: event.candidate}).catch(() => {});
+    };
+    pc.ontrack = event => {
+      if (!entry.stream.getTracks().includes(event.track)) entry.stream.addTrack(event.track);
+      if (onTrack) onTrack(entry);
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed') showStatus('Could not connect to ' + (name || 'someone') + '.');
+    };
+    peers.set(key, entry);
+    return entry;
+  }
+  function closePeer(key) {
+    const entry = peers.get(key);
+    if (!entry) return;
+    try { entry.pc.close(); } catch (_) {}
+    peers.delete(key);
+    removeTile(key);
+  }
+  function closeAllPeers() {
+    for (const key of Array.from(peers.keys())) closePeer(key);
+  }
+  async function addIce(key, candidate) {
+    const entry = peers.get(key);
+    if (!entry) return;
+    if (!entry.pc.remoteDescription) entry.pending.push(candidate);
+    else await entry.pc.addIceCandidate(candidate).catch(() => {});
+  }
+  async function flushIce(entry) {
+    for (const candidate of entry.pending.splice(0)) await entry.pc.addIceCandidate(candidate).catch(() => {});
+  }
+
   let pollTimer = null;
-  let startingCall = false;
-  let connectingMom = false;
-  let momJoinPending = false;
-  let activeTarget = 'tv';
-  let pendingOffer = null;
-  let momReady = false;
-  let momCameraOn = false;
-  let momMicOn = false;
-  const pendingIce = [];
-  const pendingMomIce = [];
-  const remote = document.querySelector('#remote');
+  let pollBusy = false;
+  async function poll() {
+    if (pollBusy) return;
+    pollBusy = true;
+    try {
+      const data = await getJSON('/api/poll?room=' + encodeURIComponent(room) + '&peer=' + role + '&id=' + encodeURIComponent(myId));
+      if (data.gone) return onGone();
+      for (const message of data.messages || []) {
+        try { await handle(message); } catch (error) { console.warn('message', message.type, error); }
+      }
+    } catch (error) {
+      showStatus(mom ? 'Trying to reconnect…' : 'Connection issue: ' + error.message);
+    } finally {
+      pollBusy = false;
+    }
+  }
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(poll, 400);
+    poll();
+  }
+  function stopPolling() {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  // ---------- Video tiles (family page and TV) ----------
+  const tilesEl = document.querySelector(tv ? '#tvTiles' : '#tiles');
+  function tileFor(key, name) {
+    let tile = tilesEl && tilesEl.querySelector('[data-key="' + CSS.escape(key) + '"]');
+    if (!tile) {
+      tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.dataset.key = key;
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.playsInline = true;
+      const label = document.createElement('span');
+      label.className = 'tile-name';
+      const off = document.createElement('span');
+      off.className = 'tile-off';
+      off.textContent = 'Camera off';
+      tile.append(video, off, label);
+      tilesEl.append(tile);
+    }
+    tile.querySelector('.tile-name').textContent = name || '';
+    return tile;
+  }
+  function removeTile(key) {
+    const tile = tilesEl && tilesEl.querySelector('[data-key="' + CSS.escape(key) + '"]');
+    if (tile) {
+      tile.querySelector('video').srcObject = null;
+      tile.remove();
+    }
+    layout();
+  }
+  function showStream(entry, onBlocked) {
+    const tile = tileFor(entry.key, entry.name);
+    const video = tile.querySelector('video');
+    if (video.srcObject !== entry.stream) video.srcObject = entry.stream;
+    video.play().catch(() => onBlocked && onBlocked());
+    layout();
+  }
+  function layout() {
+    if (!tilesEl) return;
+    const tiles = Array.from(tilesEl.children);
+    const count = tiles.length;
+    tilesEl.dataset.count = String(count);
+    if (tv) {
+      // 1-3 side by side, 4 as 2x2, 5-6 as 3x2.
+      const cols = count <= 3 ? Math.max(count, 1) : Math.ceil(count / 2);
+      tilesEl.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+      tilesEl.style.gridTemplateRows = count <= 3 ? '1fr' : 'repeat(2, minmax(0, 1fr))';
+      return;
+    }
+    // Family page: Mom's tile is largest while her camera is on.
+    const momTile = tilesEl.querySelector('[data-key="mom"]');
+    const momBig = Boolean(momTile && momVideoOn);
+    if (momTile) momTile.classList.toggle('camera-off', !momVideoOn);
+    tiles.forEach(tile => { tile.style.gridColumn = ''; tile.style.gridRow = ''; });
+    if (momBig && count > 1) {
+      const others = count - 1;
+      tilesEl.style.gridTemplateColumns = 'repeat(' + others + ', minmax(0, 1fr))';
+      tilesEl.style.gridTemplateRows = '3fr 1fr';
+      momTile.style.gridColumn = '1 / -1';
+      momTile.style.gridRow = '1';
+    } else {
+      const cols = count <= 2 ? Math.max(count, 1) : 2;
+      tilesEl.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+      tilesEl.style.gridTemplateRows = count <= 2 ? '1fr' : 'repeat(2, minmax(0, 1fr))';
+    }
+    document.querySelector('#caller .stage').classList.toggle('has-tiles', count > 0);
+  }
+  let momVideoOn = false;
+
+  // ---------- Draggable self-view (family page) ----------
   const preview = document.querySelector('#preview');
   const previewPanel = document.querySelector('#previewPanel');
-  const callerRemote = document.querySelector('#callerRemote');
-  const momRemote = document.querySelector('#momRemote');
-  const momPreview = document.querySelector('#momPreview');
-  const momPreviewPanel = document.querySelector('#momPreviewPanel');
-
-  setupPreviewPanel(previewPanel, preview, '#previewDragHandle', '#previewMinimize');
-
-  function setupPreviewPanel(panel, video, handleSelector, buttonSelector) {
+  function setupPreviewPanel(panel, video) {
     if (!panel || !video) return;
-    const handle = panel.querySelector(handleSelector);
-    const button = panel.querySelector(buttonSelector);
+    const handle = panel.querySelector('.preview-bar');
+    const button = panel.querySelector('.preview-minimize');
     let drag = null;
     button.addEventListener('click', () => {
       const minimized = panel.classList.toggle('minimized');
       video.hidden = minimized;
       button.textContent = minimized ? '+' : '−';
-      button.setAttribute('aria-label', minimized ? 'Show preview' : 'Minimize preview');
+      button.setAttribute('aria-label', minimized ? 'Show your camera' : 'Hide your camera');
     });
     handle.addEventListener('pointerdown', event => {
       if (event.target.closest('button')) return;
@@ -129,328 +253,508 @@
     handle.addEventListener('pointermove', event => {
       if (!drag) return;
       const rect = panel.getBoundingClientRect();
-      const left = Math.max(0, Math.min(window.innerWidth - rect.width, drag.left + event.clientX - drag.x));
-      const top = Math.max(0, Math.min(window.innerHeight - rect.height, drag.top + event.clientY - drag.y));
-      panel.style.left = left + 'px';
-      panel.style.top = top + 'px';
+      panel.style.left = Math.max(0, Math.min(window.innerWidth - rect.width, drag.left + event.clientX - drag.x)) + 'px';
+      panel.style.top = Math.max(0, Math.min(window.innerHeight - rect.height, drag.top + event.clientY - drag.y)) + 'px';
     });
-    const stopDragging = event => {
+    const stop = event => {
       drag = null;
       if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
     };
-    handle.addEventListener('pointerup', stopDragging);
-    handle.addEventListener('pointercancel', stopDragging);
+    handle.addEventListener('pointerup', stop);
+    handle.addEventListener('pointercancel', stop);
   }
 
-  function showPreview(panel, video, stream) {
-    video.srcObject = stream;
-    video.hidden = panel.classList.contains('minimized');
-    panel.hidden = false;
-  }
+  // =====================================================================
+  // Family caller page
+  // =====================================================================
+  let handle = async () => {};
+  let onGone = () => {};
 
-  async function post(path, body) {
-    const response = await fetch(path, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(Object.assign({room, peer: role}, body))
+  if (caller) {
+    setupPreviewPanel(previewPanel, preview);
+    const startBtn = document.querySelector('#startCall');
+    const startLabel = startBtn.querySelector('.label');
+    const hangupBtn = document.querySelector('#hangup');
+    const tvHint = document.querySelector('#tvHint');
+    const nameEl = document.querySelector('#callerName');
+    let stream = null;
+    let inCall = false;
+    let busy = false;
+    let roster = [];
+    let callState = {active: false, callers: []};
+    let statePoll = null;
+
+    nameEl.textContent = readCookie('vdi_name') || 'family';
+    document.querySelector('#changeName').addEventListener('click', async () => {
+      const name = window.prompt('Your name, so Mom knows who’s calling:', readCookie('vdi_name'));
+      if (name === null) return;
+      try {
+        await post('/api/name', {name});
+        nameEl.textContent = readCookie('vdi_name') || 'family';
+      } catch (error) {
+        showStatus(error.message);
+      }
     });
-    const data = await response.json();
-    if (!response.ok) {
-      const error = new Error(data.error || ('Request failed (' + response.status + ').'));
-      error.data = data;
-      throw error;
-    }
-    return data;
-  }
+    document.querySelector('#shareMomLink').addEventListener('click', shareMomLink);
 
-  async function prepareTV() {
-    try {
-      await post('/api/prepare-tv', {});
-    } catch (error) {
-      if (!(error.data && error.data.quiet)) throw error;
-      if (!window.confirm(error.message + ' Wake the TV anyway?')) {
-        const cancelled = new Error('Call not started. It’s quiet hours.');
-        cancelled.quiet = true;
-        throw cancelled;
-      }
-      await post('/api/prepare-tv', {urgent: true});
-    }
-  }
-
-  async function send(to, message) {
-    await post('/api/send', {to, message});
-  }
-
-  async function poll() {
-    try {
-      const response = await fetch('/api/poll?room=' + encodeURIComponent(room || '') + '&peer=' + role, {cache: 'no-store'});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || ('Request failed (' + response.status + ').'));
-      for (const message of data.messages || []) await handle(message);
-    } catch (error) {
-      showStatus(mom ? 'Trying to reconnect…' : 'Signaling issue: ' + error.message);
-    }
-  }
-
-  function startPolling() {
-    if (pollTimer) return;
-    pollTimer = setInterval(poll, 350);
-    poll();
-  }
-
-  async function makePeer(channel = 'tv') {
-    let connection = caller && channel === 'mom' ? momPc : pc;
-    if (connection) return connection;
-    connection = new RTCPeerConnection(peerConfig);
-    if (caller && channel === 'mom') momPc = connection;
-    else pc = connection;
-
-    connection.onicecandidate = event => {
-      if (event.candidate) {
-        send(caller ? channel : 'caller', {type: 'ice', channel, candidate: event.candidate})
-          .catch(error => showStatus(error.message));
-      }
-    };
-    connection.onconnectionstatechange = () => {
-      if (connection.connectionState === 'failed') showStatus('Call connection failed.');
-    };
-    connection.ontrack = event => {
-      const target = tv ? remote : mom ? momRemote : callerRemote;
-      if (event.streams[0]) {
-        target.srcObject = event.streams[0];
+    const others = () => roster.filter(item => item.id !== myId);
+    function renderIdle() {
+      if (inCall) return;
+      const names = callState.callers.map(item => item.name);
+      const full = callState.callers.length >= MAX_CALLERS;
+      if (callState.active && names.length) {
+        titleEl.textContent = joinNames(names) + (names.length > 1 ? ' are' : ' is') + ' on a call with Mom';
+        startLabel.textContent = full ? 'The call is full' : 'Join the call';
+        startBtn.disabled = full || busy;
+        tvHint.hidden = true;
+        showStatus(full ? 'Up to ' + MAX_CALLERS + ' family members can be on a call.' : 'Joining won’t wake the TV again.');
       } else {
-        const targetStream = target.srcObject || new MediaStream();
-        if (!targetStream.getTracks().includes(event.track)) targetStream.addTrack(event.track);
-        target.srcObject = targetStream;
+        titleEl.textContent = 'Call Mom';
+        startLabel.textContent = 'Call Mom on the TV';
+        startBtn.disabled = busy;
+        tvHint.hidden = false;
+        showStatus('Ready to call.');
       }
-      target.hidden = false;
-      target.play().then(() => {
-        if (tv) showStatus('Connected on the TV');
-        else if (mom) showStatus('Connected');
-        else if (channel === 'mom') showStatus('Mom is connected');
-      }).catch(async () => {
-        if (tv) {
-          try {
-            await post('/api/play-tv', {});
-            document.querySelector('#enableAudio').hidden = true;
-            showStatus('Connected on the TV');
-          } catch (_) {
-            document.querySelector('#enableAudio').hidden = false;
-            showStatus('Tap Enable sound on the TV.');
-          }
-        } else {
-          showStatus('Connected');
+    }
+    async function refreshState() {
+      try {
+        callState = await getJSON('/api/state');
+        renderIdle();
+      } catch (_) {}
+    }
+    function watchState(on) {
+      clearInterval(statePoll);
+      statePoll = on ? setInterval(refreshState, 2500) : null;
+      if (on) refreshState();
+    }
+    function renderInCall() {
+      const names = others().map(item => item.name);
+      const momOn = peers.has('mom');
+      titleEl.textContent = 'On the call';
+      const parts = [];
+      if (momOn) parts.push('Mom');
+      parts.push(...names);
+      showStatus(parts.length ? 'With ' + joinNames(parts) + '.' + (momOn ? '' : ' Mom can answer from her phone.') : 'You’re on Mom’s TV. Waiting for Mom to answer on her phone.');
+    }
+
+    // Lower each video as the call grows so phones and the Fire TV keep up.
+    function applyQuality() {
+      const n = Math.max(1, roster.length);
+      const [scale, bitrate] = n === 1 ? [1, 1500000] : n <= 3 ? [1.5, 900000] : [2, 600000];
+      for (const entry of peers.values()) {
+        for (const sender of entry.pc.getSenders()) {
+          if (!sender.track || sender.track.kind !== 'video') continue;
+          const params = sender.getParameters();
+          if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+          params.encodings[0].scaleResolutionDownBy = scale;
+          params.encodings[0].maxBitrate = bitrate;
+          sender.setParameters(params).catch(() => {});
         }
-      });
+      }
+    }
+
+    function showRemote(entry) { showStream(entry); }
+
+    async function offerTo(key, name) {
+      const entry = newPeer(key, name, key === 'tv' ? null : showRemote);
+      stream.getTracks().forEach(track => entry.pc.addTrack(track, stream));
+      await entry.pc.setLocalDescription(await entry.pc.createOffer());
+      await send(key, {type: 'offer', description: entry.pc.localDescription});
+    }
+
+    async function requestStart() {
+      try {
+        return await post('/api/start', {});
+      } catch (error) {
+        if (!(error.data && error.data.quiet)) throw error;
+        if (!window.confirm(error.message + ' Wake the TV anyway?')) throw new Error('Call not started. It’s quiet hours.');
+        return post('/api/start', {urgent: true});
+      }
+    }
+
+    async function enterCall() {
+      if (busy || inCall) return;
+      const joining = callState.active && callState.callers.length > 0;
+      if (!joining && !window.confirm('This turns on Mom’s TV. Call now?')) return;
+      busy = true;
+      startBtn.disabled = true;
+      try {
+        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+          throw new Error('Camera and microphone need a trusted HTTPS connection.');
+        }
+        showStatus('Turning on your camera…');
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: {width: {ideal: 1280}, height: {ideal: 720}, frameRate: {ideal: 24, max: 30}}
+        });
+        preview.srcObject = stream;
+        preview.hidden = previewPanel.classList.contains('minimized');
+        previewPanel.hidden = false;
+        showStatus(joining ? 'Joining…' : 'Waking the TV…');
+        const result = joining ? await post('/api/join', {}) : await requestStart();
+        roster = result.callers;
+        inCall = true;
+        watchState(false);
+        document.body.classList.add('in-call');
+        startPolling();
+        await offerTo('tv', 'TV');
+        for (const other of others()) await offerTo(other.id, other.name);
+        applyQuality();
+        renderInCall();
+      } catch (error) {
+        await leaveLocal();
+        showStatus(error.message);
+      } finally {
+        busy = false;
+        if (!inCall) renderIdle();
+      }
+    }
+
+    async function leaveLocal() {
+      inCall = false;
+      stopPolling();
+      closeAllPeers();
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      stream = null;
+      roster = [];
+      momVideoOn = false;
+      preview.srcObject = null;
+      previewPanel.hidden = true;
+      document.body.classList.remove('in-call');
+      layout();
+      watchState(true);
+    }
+
+    onGone = async () => {
+      await leaveLocal();
+      showStatus('You were disconnected from the call.');
     };
-    return connection;
+
+    handle = async message => {
+      const from = message.from;
+      if (message.type === 'roster') {
+        roster = message.callers;
+        const ids = new Set(roster.map(item => item.id));
+        for (const key of Array.from(peers.keys())) {
+          if (key !== 'tv' && key !== 'mom' && !ids.has(key)) closePeer(key);
+        }
+        for (const item of roster) {
+          const entry = peers.get(item.id);
+          if (entry) { entry.name = item.name; tileFor(item.id, item.name); }
+        }
+        applyQuality();
+        renderInCall();
+      } else if (message.type === 'offer' && from === 'mom') {
+        const entry = newPeer('mom', 'Mom', showRemote);
+        await entry.pc.setRemoteDescription(message.description);
+        await flushIce(entry);
+        await entry.pc.setLocalDescription(await entry.pc.createAnswer());
+        await send('mom', {type: 'answer', description: entry.pc.localDescription});
+        tileFor('mom', 'Mom');
+        layout();
+        renderInCall();
+      } else if (message.type === 'offer') {
+        // A newer caller is connecting to us.
+        const entry = newPeer(from, message.fromName, showRemote);
+        stream.getTracks().forEach(track => entry.pc.addTrack(track, stream));
+        await entry.pc.setRemoteDescription(message.description);
+        await flushIce(entry);
+        await entry.pc.setLocalDescription(await entry.pc.createAnswer());
+        await send(from, {type: 'answer', description: entry.pc.localDescription});
+        applyQuality();
+      } else if (message.type === 'answer') {
+        const entry = peers.get(from);
+        if (!entry) return;
+        await entry.pc.setRemoteDescription(message.description);
+        await flushIce(entry);
+      } else if (message.type === 'ice') {
+        await addIce(from, message.candidate);
+      } else if (message.type === 'media' && from === 'mom') {
+        momVideoOn = Boolean(message.video);
+        layout();
+      } else if (message.type === 'left') {
+        closePeer(from);
+        renderInCall();
+      } else if (message.type === 'hangup' && from === 'mom') {
+        closePeer('mom');
+        momVideoOn = false;
+        layout();
+        renderInCall();
+      }
+    };
+
+    startBtn.addEventListener('click', enterCall);
+    hangupBtn.addEventListener('click', async () => {
+      try { await post('/api/leave', {}); } catch (_) {}
+      await leaveLocal();
+      showStatus('You left the call.');
+    });
+    window.addEventListener('pagehide', () => {
+      if (inCall) navigator.sendBeacon('/api/leave', new Blob([JSON.stringify({room, peer: role, id: myId})], {type: 'application/json'}));
+    });
+    layout();
+    watchState(true);
   }
 
-  async function handle(message) {
-    if (message.type === 'join' && caller) {
-      await connectMomToCall();
-    } else if (message.type === 'ready' && mom) {
-      momReady = true;
-      callerFrom = message.from || '';
-      document.querySelector('#momIncoming').hidden = false;
-      document.querySelector('#momActions').hidden = false;
-      document.querySelector('#momAnswer').hidden = false;
-      setMomState('incoming');
-      showStatus('');
-    } else if (message.type === 'offer' && caller && message.channel === 'mom') {
-      const peer = momPc || await makePeer('mom');
-      await peer.setRemoteDescription(message.description);
-      for (const item of pendingMomIce.splice(0)) await peer.addIceCandidate(item);
-      const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-      await send('mom', {type: 'answer', channel: 'mom', description: peer.localDescription});
-      showStatus('Mom is connecting');
-    } else if (message.type === 'offer' && tv) {
-      const channel = message.channel || 'tv';
-      const peer = await makePeer(channel);
-      await peer.setRemoteDescription(message.description);
-      for (const item of pendingIce.splice(0)) await peer.addIceCandidate(item);
-      const answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-      await send('caller', {type: 'answer', channel, description: peer.localDescription});
-      showStatus('Connecting…');
-    } else if (message.type === 'answer' && caller) {
-      const channel = message.channel || 'tv';
-      const peer = channel === 'mom' ? momPc : pc;
-      const candidates = channel === 'mom' ? pendingMomIce : pendingIce;
-      if (!peer) return;
-      await peer.setRemoteDescription(message.description);
-      for (const item of candidates.splice(0)) await peer.addIceCandidate(item);
-      showStatus(channel === 'mom' ? 'Mom is connected' : 'Connected on the TV');
-    } else if (message.type === 'answer' && mom && pc) {
-      await pc.setRemoteDescription(message.description);
-      for (const item of pendingIce.splice(0)) await pc.addIceCandidate(item);
-      showStatus('Connected');
-    } else if (message.type === 'ice') {
-      const channel = message.channel || (tv ? 'tv' : mom ? 'mom' : 'tv');
-      const peer = caller ? (channel === 'mom' ? momPc : pc) : pc;
-      const candidates = caller && channel === 'mom' ? pendingMomIce : pendingIce;
-      if (!peer || !peer.remoteDescription) candidates.push(message.candidate);
-      else await peer.addIceCandidate(message.candidate);
-    } else if (message.type === 'hangup' && caller && message.channel === 'mom') {
-      if (momPc) momPc.close();
-      momPc = null;
-      pendingMomIce.length = 0;
-      showStatus('Mom left the call');
-    } else if (message.type === 'hangup') {
-      cleanup();
-      showStatus('Call ended.');
-    }
-  }
+  // =====================================================================
+  // Mom's phone page
+  // =====================================================================
+  if (mom) {
+    const momPreview = document.querySelector('#momPreview');
+    const answerBtn = document.querySelector('#momAnswer');
+    const hangupBtn = document.querySelector('#momHangup');
+    const actions = document.querySelector('#momActions');
+    let stream = null;
+    let cameraOn = false;
+    let micOn = false;
+    let answered = false;
+    let roster = [];
 
-  function updateMomMediaButtons() {
-    const camera = document.querySelector('#momCamera');
-    const microphone = document.querySelector('#momMic');
-    camera.setAttribute('aria-pressed', String(momCameraOn));
-    camera.querySelector('.switch-state').textContent = momCameraOn ? 'On' : 'Off';
-    microphone.setAttribute('aria-pressed', String(momMicOn));
-    microphone.querySelector('.switch-state').textContent = momMicOn ? 'On' : 'Off';
-  }
+    const STATES = {
+      waiting: ['No call right now', 'Keep this page open. When your family calls, a green Answer button appears here.'],
+      incoming: ['Your family is calling', 'They are on your TV. Turn on your camera and microphone if you like, then tap Answer.'],
+      incall: ['You’re on the call', 'Your family can see and hear you while your camera and microphone are on.']
+    };
+    function setState(state) {
+      document.body.dataset.momState = state;
+      [titleEl.textContent, introEl.textContent] = STATES[state];
+      const names = joinNames(roster.map(item => item.name));
+      if (state === 'incoming' && roster.length) titleEl.textContent = names + (roster.length > 1 ? ' are' : ' is') + ' calling';
+      if (state === 'incall' && roster.length) titleEl.textContent = 'You’re talking with ' + names;
+      actions.hidden = state === 'waiting';
+      answerBtn.hidden = state !== 'incoming';
+      hangupBtn.hidden = state !== 'incall';
+    }
 
-  async function acquireMomTrack(kind) {
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Camera and microphone need HTTPS.');
-    }
-    const isVideo = kind === 'video';
-    const captured = await navigator.mediaDevices.getUserMedia(isVideo
-      ? {audio: false, video: {width: {ideal: 1280}, height: {ideal: 720}}}
-      : {audio: {echoCancellation: {ideal: true}, noiseSuppression: {ideal: true}, autoGainControl: {ideal: true}}, video: false});
-    const track = captured.getTracks()[0];
-    if (!stream) stream = new MediaStream();
-    stream.addTrack(track);
-    if (isVideo) {
-      showPreview(momPreviewPanel, momPreview, stream);
-    }
-    if (pc) {
-      const transceiver = pc.getTransceivers().find(item => item.receiver.track.kind === kind);
-      if (!transceiver) throw new Error('This call cannot add that media track.');
-      await transceiver.sender.replaceTrack(track);
-    }
-    return track;
-  }
-
-  async function stopMomTrack(kind) {
-    const track = stream && stream.getTracks().find(item => item.kind === kind);
-    if (pc) {
-      const transceiver = pc.getTransceivers().find(item => item.receiver.track.kind === kind);
-      if (transceiver && transceiver.sender.track) {
-        try { await transceiver.sender.replaceTrack(null); } catch (_) {}
+    function updateSwitches() {
+      for (const [id, on] of [['#momCamera', cameraOn], ['#momMic', micOn]]) {
+        const button = document.querySelector(id);
+        button.setAttribute('aria-pressed', String(on));
+        button.querySelector('.switch-state').textContent = on ? 'On' : 'Off';
       }
     }
-    if (track) {
-      stream.removeTrack(track);
-      track.stop();
+    function broadcastMedia() {
+      for (const key of peers.keys()) send(key, {type: 'media', video: cameraOn, audio: micOn}).catch(() => {});
     }
-    if (kind === 'video') {
-      momPreview.pause();
-      momPreview.srcObject = null;
-      momPreview.hidden = true;
+    async function setTrackEverywhere(kind, track) {
+      for (const entry of peers.values()) {
+        const transceiver = entry.transceivers && entry.transceivers[kind];
+        if (transceiver) await transceiver.sender.replaceTrack(track).catch(() => {});
+      }
     }
-  }
-
-  async function toggleMomMedia(kind) {
-    const isVideo = kind === 'video';
-    const next = !(isVideo ? momCameraOn : momMicOn);
-    const existingTrack = stream && stream.getTracks().find(track => track.kind === kind);
-    if (!next) {
-      await stopMomTrack(kind);
-      if (isVideo) momCameraOn = false;
-      else momMicOn = false;
-      updateMomMediaButtons();
-      return;
-    }
-    try {
-      const track = existingTrack || await acquireMomTrack(kind);
-      track.enabled = true;
+    async function turnOn(kind) {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error('Camera and microphone need HTTPS.');
+      const isVideo = kind === 'video';
+      const captured = await navigator.mediaDevices.getUserMedia(isVideo
+        ? {audio: false, video: {width: {ideal: 1280}, height: {ideal: 720}}}
+        : {audio: {echoCancellation: {ideal: true}, noiseSuppression: {ideal: true}, autoGainControl: {ideal: true}}, video: false});
+      const track = captured.getTracks()[0];
+      if (!stream) stream = new MediaStream();
+      stream.addTrack(track);
       if (isVideo) {
-        momCameraOn = true;
-        showPreview(momPreviewPanel, momPreview, stream);
-      } else {
-        momMicOn = true;
+        momPreview.srcObject = stream;
+        momPreview.hidden = false;
       }
-      updateMomMediaButtons();
-    } catch (error) {
-      showStatus(error.name === 'NotAllowedError'
-        ? 'Allow camera or mic access in your browser settings.'
-        : error.message);
+      await setTrackEverywhere(kind, track);
     }
-  }
-
-  function cleanup(keepIncomingCall = false) {
-    if (caller && pollTimer) clearInterval(pollTimer);
-    if (caller) pollTimer = null;
-    if (pc) pc.close();
-    if (momPc) momPc.close();
-    pc = null;
-    momPc = null;
-    if (stream) stream.getTracks().forEach(track => track.stop());
-    stream = null;
-    connectingMom = false;
-    momJoinPending = false;
-    if (!keepIncomingCall) {
-      pendingOffer = null;
-      pendingIce.length = 0;
-      pendingMomIce.length = 0;
-    }
-    previewPanel.hidden = true;
-    setInCall(false);
-    for (const video of [remote, preview, callerRemote, momRemote, momPreview]) {
-      if (video) {
-        video.srcObject = null;
-        if (video !== remote) video.hidden = true;
+    async function turnOff(kind) {
+      await setTrackEverywhere(kind, null);
+      const track = stream && stream.getTracks().find(item => item.kind === kind);
+      if (track) { stream.removeTrack(track); track.stop(); }
+      if (kind === 'video') {
+        momPreview.srcObject = null;
+        momPreview.hidden = true;
       }
     }
-    document.querySelector('#hangup').disabled = true;
-    if (caller) {
-      document.querySelector('#startCall').disabled = false;
-    }
-    if (mom) {
-      document.querySelector('#momIncoming').hidden = !keepIncomingCall;
-      document.querySelector('#momActions').hidden = !keepIncomingCall;
-      document.querySelector('#momAnswer').disabled = false;
-      document.querySelector('#momAnswer').hidden = false;
-      document.querySelector('#momHangup').hidden = true;
-      setMomState(keepIncomingCall ? 'incoming' : 'waiting');
-      if (!keepIncomingCall) {
-        momReady = false;
-        momCameraOn = false;
-        momMicOn = false;
+    async function toggle(kind) {
+      const isVideo = kind === 'video';
+      const next = !(isVideo ? cameraOn : micOn);
+      try {
+        if (next) await turnOn(kind); else await turnOff(kind);
+        if (isVideo) cameraOn = next; else micOn = next;
+        updateSwitches();
+        broadcastMedia();
+      } catch (error) {
+        showStatus(error.name === 'NotAllowedError' ? 'Allow camera or microphone access in your browser settings.' : error.message);
       }
-      updateMomMediaButtons();
     }
+
+    async function offerTo(item) {
+      const entry = newPeer(item.id, item.name, null);
+      entry.transceivers = {};
+      for (const kind of ['audio', 'video']) {
+        const transceiver = entry.pc.addTransceiver(kind, {direction: 'sendonly'});
+        const track = stream && stream.getTracks().find(t => t.kind === kind);
+        if (track) await transceiver.sender.replaceTrack(track);
+        entry.transceivers[kind] = transceiver;
+      }
+      await entry.pc.setLocalDescription(await entry.pc.createOffer());
+      await send(item.id, {type: 'offer', description: entry.pc.localDescription});
+      await send(item.id, {type: 'media', video: cameraOn, audio: micOn});
+    }
+
+    function endCall(text) {
+      closeAllPeers();
+      answered = false;
+      showStatus(text || '');
+    }
+
+    async function applyRoster(list) {
+      roster = list;
+      if (!roster.length) {
+        if (answered) endCall('Call ended.');
+        setState('waiting');
+        return;
+      }
+      if (!answered) return setState('incoming');
+      const ids = new Set(roster.map(item => item.id));
+      for (const key of Array.from(peers.keys())) if (!ids.has(key)) closePeer(key);
+      for (const item of roster) if (!peers.has(item.id)) await offerTo(item).catch(() => {});
+      setState('incall');
+    }
+
+    handle = async message => {
+      const from = message.from;
+      if (message.type === 'roster') {
+        await applyRoster(message.callers);
+      } else if (message.type === 'answer') {
+        const entry = peers.get(from);
+        if (!entry) return;
+        await entry.pc.setRemoteDescription(message.description);
+        await flushIce(entry);
+        showStatus('Connected');
+      } else if (message.type === 'ice') {
+        await addIce(from, message.candidate);
+      } else if (message.type === 'left') {
+        closePeer(from);
+      } else if (message.type === 'hangup') {
+        endCall('Call ended.');
+        await applyRoster([]);
+      }
+    };
+
+    answerBtn.addEventListener('click', async () => {
+      if (answered || !roster.length) return;
+      answered = true;
+      answerBtn.disabled = true;
+      showStatus('Connecting…');
+      try {
+        for (const item of roster) await offerTo(item);
+        setState('incall');
+      } catch (error) {
+        endCall(error.message);
+        setState('incoming');
+      } finally {
+        answerBtn.disabled = false;
+      }
+    });
+    hangupBtn.addEventListener('click', async () => {
+      for (const key of peers.keys()) await send(key, {type: 'hangup'}).catch(() => {});
+      endCall('You hung up.');
+      if (cameraOn) await toggle('video');
+      if (micOn) await toggle('audio');
+      setState(roster.length ? 'incoming' : 'waiting');
+    });
+    document.querySelector('#momCamera').addEventListener('click', () => toggle('video'));
+    document.querySelector('#momMic').addEventListener('click', () => toggle('audio'));
+
+    setState('waiting');
+    showStatus('');
+    updateSwitches();
+    getJSON('/api/state').then(data => applyRoster(data.active ? data.callers : [])).catch(() => {});
+    startPolling();
   }
 
-  async function connectMomToCall() {
-    if (activeTarget !== 'tv') return;
-    if (startingCall || !pc) {
-      momJoinPending = true;
-      return;
+  // =====================================================================
+  // Fire TV receiver
+  // =====================================================================
+  if (tv) {
+    const fullscreen = document.querySelector('#enterFullscreen');
+    const enableAudio = document.querySelector('#enableAudio');
+    const toast = document.querySelector('#toast');
+    let audioCtx = null;
+    let known = new Set();
+    let toastTimer = null;
+    titleEl.textContent = 'Connecting your call…';
+    introEl.textContent = 'Your family is connecting to the TV.';
+    showStatus('');
+
+    function chime() {
+      if (!audioCtx) return;
+      const now = audioCtx.currentTime;
+      [660, 880].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, now + i * 0.18);
+        gain.gain.linearRampToValueAtTime(0.12, now + i * 0.18 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.18 + 0.5);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(now + i * 0.18);
+        osc.stop(now + i * 0.18 + 0.55);
+      });
     }
-    if (connectingMom) return;
-    connectingMom = true;
-    momJoinPending = false;
-    try {
-      if (momPc) momPc.close();
-      momPc = null;
-      pendingMomIce.length = 0;
-      const peer = await makePeer('mom');
-      peer.addTransceiver('audio', {direction: 'recvonly'});
-      peer.addTransceiver('video', {direction: 'recvonly'});
-      await send('mom', {type: 'ready', channel: 'mom'});
-      showStatus('Mom can join from her phone page');
-    } catch (error) {
-      showStatus('Could not connect Mom’s page: ' + error.message);
-    } finally {
-      connectingMom = false;
-      if (momJoinPending) connectMomToCall();
+    function announce(text) {
+      toast.textContent = text;
+      toast.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toast.hidden = true; }, 4000);
     }
+    async function unblock() {
+      try {
+        await post('/api/play-tv', {});
+        enableAudio.hidden = true;
+      } catch (_) {
+        enableAudio.hidden = false;
+      }
+    }
+
+    handle = async message => {
+      const from = message.from;
+      if (message.type === 'offer') {
+        const entry = newPeer(from, message.fromName, item => showStream(item, unblock));
+        await entry.pc.setRemoteDescription(message.description);
+        await flushIce(entry);
+        await entry.pc.setLocalDescription(await entry.pc.createAnswer());
+        await send(from, {type: 'answer', description: entry.pc.localDescription});
+      } else if (message.type === 'ice') {
+        await addIce(from, message.candidate);
+      } else if (message.type === 'roster') {
+        const ids = new Set(message.callers.map(item => item.id));
+        const added = message.callers.filter(item => !known.has(item.id));
+        if (known.size && added.length) {
+          chime();
+          announce(joinNames(added.map(item => item.name)) + ' joined');
+        }
+        known = ids;
+        for (const key of Array.from(peers.keys())) if (!ids.has(key)) closePeer(key);
+        for (const item of message.callers) {
+          const entry = peers.get(item.id);
+          if (entry) { entry.name = item.name; tileFor(item.id, item.name); }
+        }
+      } else if (message.type === 'left') {
+        closePeer(from);
+      } else if (message.type === 'hangup') {
+        closeAllPeers();
+        known = new Set();
+        announce('Call ended');
+      }
+    };
+
+    fullscreen.addEventListener('click', async () => {
+      try { await document.documentElement.requestFullscreen(); } catch (_) {}
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+      fullscreen.hidden = true;
+      document.body.classList.add('theater');
+      for (const video of document.querySelectorAll('#tvTiles video')) video.play().catch(() => {});
+    });
+    enableAudio.addEventListener('click', () => {
+      for (const video of document.querySelectorAll('#tvTiles video')) video.play().catch(() => {});
+    });
+    startPolling();
   }
 
+  // ---------- Sharing Mom's answer link ----------
   async function shareMomLink() {
     if (location.protocol !== 'https:') {
       showStatus('Open the public HTTPS page before sharing Mom’s call link.');
@@ -458,9 +762,7 @@
     }
     let url;
     try {
-      const response = await fetch('/api/mom-link', {cache: 'no-store'});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not get Mom’s link.');
+      const data = await getJSON('/api/mom-link');
       url = new URL(data.path, location.href).href;
     } catch (error) {
       showStatus(error.message);
@@ -480,128 +782,4 @@
       if (error.name !== 'AbortError') showStatus('Could not share the link: ' + error.message);
     }
   }
-
-  if (caller) {
-    const nameEl = document.querySelector('#callerName');
-    nameEl.textContent = readCookie('vdi_name') || 'family';
-    document.querySelector('#changeName').addEventListener('click', async () => {
-      const name = window.prompt('Your name, so Mom knows who’s calling:', readCookie('vdi_name'));
-      if (name === null) return;
-      try {
-        await post('/api/name', {name});
-        nameEl.textContent = readCookie('vdi_name') || 'family';
-      } catch (error) {
-        showStatus(error.message);
-      }
-    });
-
-    async function startCall() {
-      if (startingCall || pc) return;
-      startingCall = true;
-      activeTarget = 'tv';
-      document.querySelector('#startCall').disabled = true;
-      try {
-        showStatus('Waking the TV…');
-        await prepareTV();
-        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-          throw new Error('Camera and microphone need a trusted HTTPS connection.');
-        }
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: {width: {ideal: 1280}, height: {ideal: 720}, frameRate: {ideal: 24, max: 30}}
-        });
-        showPreview(previewPanel, preview, stream);
-        const peer = await makePeer('tv');
-        stream.getTracks().forEach(track => peer.addTrack(track, stream));
-        startPolling();
-        const offer = await peer.createOffer();
-        await peer.setLocalDescription(offer);
-        await send('tv', {type: 'offer', channel: 'tv', description: peer.localDescription});
-        document.querySelector('#hangup').disabled = false;
-        setInCall(true);
-        showStatus('Calling the TV…');
-      } catch (error) {
-        cleanup();
-        showStatus(error.message);
-      } finally {
-        startingCall = false;
-        if (momJoinPending) connectMomToCall();
-      }
-    }
-
-    document.querySelector('#startCall').addEventListener('click', () => {
-      if (!window.confirm('This turns on Mom’s TV. Call now?')) return;
-      startCall(true);
-    });
-    document.querySelector('#shareMomLink').addEventListener('click', shareMomLink);
-    document.querySelector('#hangup').addEventListener('click', async () => {
-      try { await send('tv', {type: 'hangup', channel: 'tv'}); } catch (_) {}
-      if (momPc) {
-        try { await send('mom', {type: 'hangup', channel: 'mom'}); } catch (_) {}
-      }
-      cleanup();
-      showStatus('Call ended.');
-    });
-  } else if (mom) {
-    send('caller', {type: 'join'}).then(startPolling).catch(startPolling);
-    document.querySelector('#momAnswer').addEventListener('click', async () => {
-      const button = document.querySelector('#momAnswer');
-      if (!momReady || startingCall) return;
-      startingCall = true;
-      button.disabled = true;
-      try {
-        if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-          throw new Error('Camera and microphone need a trusted HTTPS connection.');
-        }
-        showStatus('Connecting…');
-        if (momCameraOn && !(stream && stream.getVideoTracks().length)) await acquireMomTrack('video');
-        if (momMicOn && !(stream && stream.getAudioTracks().length)) await acquireMomTrack('audio');
-        if (!stream) stream = new MediaStream();
-        const peer = await makePeer('mom');
-        for (const kind of ['audio', 'video']) {
-          const transceiver = peer.addTransceiver(kind, {direction: 'sendonly'});
-          const track = stream.getTracks().find(item => item.kind === kind);
-          if (track) await transceiver.sender.replaceTrack(track);
-        }
-        const offer = await peer.createOffer();
-        await peer.setLocalDescription(offer);
-        await send('caller', {type: 'offer', channel: 'mom', description: peer.localDescription});
-        document.querySelector('#momIncoming').hidden = true;
-        document.querySelector('#momActions').hidden = false;
-        document.querySelector('#momAnswer').hidden = true;
-        document.querySelector('#momHangup').hidden = false;
-        document.querySelector('#momHangup').disabled = false;
-        setMomState('incall');
-        showStatus('Connecting…');
-      } catch (error) {
-        cleanup(true);
-        showStatus(error.message);
-      } finally {
-        startingCall = false;
-        button.disabled = false;
-      }
-    });
-
-    document.querySelector('#momCamera').addEventListener('click', () => toggleMomMedia('video'));
-    document.querySelector('#momMic').addEventListener('click', () => toggleMomMedia('audio'));
-    document.querySelector('#momHangup').addEventListener('click', async () => {
-      try { await send('caller', {type: 'hangup', channel: 'mom'}); } catch (_) {}
-      cleanup();
-      showStatus('Call ended.');
-    });
-  } else {
-    startPolling();
-    const fullscreen = document.querySelector('#enterFullscreen');
-    fullscreen.addEventListener('click', async () => {
-      try { await document.documentElement.requestFullscreen(); } catch (_) {}
-      fullscreen.hidden = true;
-      document.body.classList.add('theater');
-    });
-    document.querySelector('#enableAudio').addEventListener('click', () => remote.play().catch(() => {}));
-  }
-
-  window.addEventListener('beforeunload', () => {
-    cleanup();
-    if (pollTimer) clearInterval(pollTimer);
-  });
 })();

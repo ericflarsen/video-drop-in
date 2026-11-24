@@ -1,7 +1,7 @@
 name: Video Drop In
 slug: firetv_drop_in
 description: Family video calls with an optional Fire TV receiver
-version: "0.2.0"
+version: "0.3.0"
 arch:
   - aarch64
 startup: application
