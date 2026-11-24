@@ -54,7 +54,11 @@ Mom's Call app is closed. Tapping it opens the app on the Answer screen.
 Only Mom's own sign-in (her link) can turn alerts on; a family member testing
 the Mom page doesn't see the button. Only starting a call rings Mom; joining a
 call already in progress does not.
-Alerts expire after a minute, so a phone that was offline won't ring late. The
+Alerts expire after a minute, so a phone that was offline won't ring late.
+While Mom's Call is open and no one is calling, the page checks for a call
+every 5 seconds, and right away when an alert arrives. It checks quickly only
+while a call is ringing or connecting, and not at all while hidden (unless she
+is on a call). The
 app keeps its push signing key and Mom's devices in its private data folder,
 and drops a device automatically when its browser unsubscribes. No call content
 goes through the push service: only the caller's name.

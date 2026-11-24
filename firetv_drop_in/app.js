@@ -160,14 +160,32 @@
       pollBusy = false;
     }
   }
+  // Each check schedules the next, so a page can slow down when nothing is happening.
+  // Family and TV pages always check every 0.4 s; Mom's page sets its own pace below.
+  let polling = false;
+  let pollDelay = () => 400;
+  function schedulePoll(delay) {
+    clearTimeout(pollTimer);
+    pollTimer = polling ? setTimeout(runPoll, delay) : null;
+  }
+  async function runPoll() {
+    await poll();
+    schedulePoll(pollDelay());
+  }
   function startPolling() {
-    if (pollTimer) return;
-    pollTimer = setInterval(poll, 400);
-    poll();
+    if (polling) return;
+    polling = true;
+    runPoll();
   }
   function stopPolling() {
-    clearInterval(pollTimer);
+    polling = false;
+    clearTimeout(pollTimer);
     pollTimer = null;
+  }
+  function pollNow() {
+    if (!polling) return;
+    clearTimeout(pollTimer);
+    runPoll();
   }
 
   // ---------- Video tiles (family page and TV) ----------
@@ -756,9 +774,34 @@
         }
       });
     }
+    // ---------- How often to check for messages ----------
+    // Push rings her when the app is closed; checking only matters while it's open.
+    pollDelay = () => {
+      if (answered) {
+        // Connecting trades a burst of setup notes; once connected, little else arrives.
+        const settling = Array.from(peers.values()).some(entry => entry.pc.connectionState !== 'connected');
+        return settling || !peers.size ? 400 : 1500;
+      }
+      if (document.visibilityState === 'hidden') stopPolling();  // e.g. a call ended while her screen was off
+      if (roster.length) return 1000;  // a call is ringing: notice hang-ups and joiners quickly
+      return 5000;                     // nobody calling
+    };
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') clearCallAlerts();
+      if (document.visibilityState === 'visible') {
+        clearCallAlerts();
+        startPolling();  // checks right away
+        pollNow();
+      } else if (!answered) {
+        stopPolling();   // hidden and not on a call: push covers her
+      }
     });
+    if ('serviceWorker' in navigator) {
+      // A call alert just arrived: check now instead of waiting up to 5 seconds.
+      navigator.serviceWorker.addEventListener('message', event => {
+        if (event.data && event.data.type === 'call') pollNow();
+      });
+      if (navigator.serviceWorker.startMessages) navigator.serviceWorker.startMessages();
+    }
     clearCallAlerts();
     setupAlerts();
 
@@ -766,7 +809,7 @@
     showStatus('');
     updateSwitches();
     getJSON('/api/state').then(data => applyRoster(data.active ? data.callers : [])).catch(() => {});
-    startPolling();
+    if (document.visibilityState === 'visible') startPolling();
   }
 
   // =====================================================================
