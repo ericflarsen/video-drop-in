@@ -91,9 +91,10 @@ goes through the push service: only the caller's name.
 ## Calling Mom
 
 Choose **Call Mom on the TV**. Mom's page
-shows who is calling. She can turn on her camera to see herself, turn on her
-microphone, then tap **Answer**. If she refreshes her page, she can tap Answer
-again to rejoin.
+shows who is calling. She taps **Answer** and her microphone turns on, so
+the family hears her right away. Her camera stays off unless she turns it on,
+and she can switch either one off or on during the call (for example to mute
+herself). If she refreshes her page, she can tap Answer again to rejoin.
 
 If Mom has the page open on more than one device, all of them show the call.
 Answering on one takes the call; answering on another moves it there.

@@ -196,15 +196,21 @@
       tile = document.createElement('div');
       tile.className = 'tile';
       tile.dataset.key = key;
+      // Picture and sound play in separate elements: a <video> holding an audio track
+      // waits for a first video frame before it plays anything, so with the camera off
+      // the sound would never start.
       const video = document.createElement('video');
       video.autoplay = true;
       video.playsInline = true;
+      video.muted = true;
+      const audio = document.createElement('audio');
+      audio.autoplay = true;
       const label = document.createElement('span');
       label.className = 'tile-name';
       const off = document.createElement('span');
       off.className = 'tile-off';
       off.textContent = 'Camera off';
-      tile.append(video, off, label);
+      tile.append(video, audio, off, label);
       tilesEl.append(tile);
     }
     tile.querySelector('.tile-name').textContent = name || '';
@@ -214,6 +220,7 @@
     const tile = tilesEl && tilesEl.querySelector('[data-key="' + CSS.escape(key) + '"]');
     if (tile) {
       tile.querySelector('video').srcObject = null;
+      tile.querySelector('audio').srcObject = null;
       tile.remove();
     }
     layout();
@@ -221,8 +228,17 @@
   function showStream(entry, onBlocked) {
     const tile = tileFor(entry.key, entry.name);
     const video = tile.querySelector('video');
-    if (video.srcObject !== entry.stream) video.srcObject = entry.stream;
-    video.play().catch(() => onBlocked && onBlocked());
+    const audio = tile.querySelector('audio');
+    if (!entry.videoOut) entry.videoOut = new MediaStream();
+    if (!entry.audioOut) entry.audioOut = new MediaStream();
+    for (const track of entry.stream.getTracks()) {
+      const out = track.kind === 'video' ? entry.videoOut : entry.audioOut;
+      if (!out.getTracks().includes(track)) out.addTrack(track);
+    }
+    if (video.srcObject !== entry.videoOut) video.srcObject = entry.videoOut;
+    if (audio.srcObject !== entry.audioOut) audio.srcObject = entry.audioOut;
+    video.play().catch(() => {});
+    audio.play().catch(() => onBlocked && onBlocked());
     layout();
   }
   function layout() {
@@ -543,8 +559,8 @@
     const STATES = {
       waiting: ['No call right now', 'Keep this page open. When your family calls, a green Answer button appears here.'],
       waitingAlerts: ['No call right now', 'Your phone will ring when your family calls. Tap the alert to answer.'],
-      incoming: ['Your family is calling', 'They are on your TV. Turn on your camera and microphone if you like, then tap Answer.'],
-      incall: ['You’re on the call', 'Your family can see and hear you while your camera and microphone are on.']
+      incoming: ['Your family is calling', 'They are on your TV. Tap Answer to talk. Turn on your camera too if you like.'],
+      incall: ['You’re on the call', 'Your family can hear you while your microphone is on, and see you while your camera is on.']
     };
     function setState(state) {
       document.body.dataset.momState = state;
@@ -675,11 +691,16 @@
     }
 
     answerBtn.addEventListener('click', async () => {
-      if (answered || !roster.length) return;
-      answered = true;
+      if (answered || answerBtn.disabled || !roster.length) return;
       answerBtn.disabled = true;
       clearCallAlerts();
       showStatus('Connecting…');
+      // Answering means she wants to talk: the mic starts on. The camera stays her choice.
+      // It turns on before the call is marked answered, so a roster update during the
+      // permission prompt can't start a second set of offers.
+      if (!micOn) await toggle('audio');
+      if (!roster.length) { await stopMedia(); answerBtn.disabled = false; return; }
+      answered = true;
       try {
         for (const item of roster) await offerTo(item);
         setState('incall');
@@ -893,10 +914,10 @@
       try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
       fullscreen.hidden = true;
       document.body.classList.add('theater');
-      for (const video of document.querySelectorAll('#tvTiles video')) video.play().catch(() => {});
+      for (const video of document.querySelectorAll('#tvTiles video, #tvTiles audio')) video.play().catch(() => {});
     });
     enableAudio.addEventListener('click', () => {
-      for (const video of document.querySelectorAll('#tvTiles video')) video.play().catch(() => {});
+      for (const video of document.querySelectorAll('#tvTiles video, #tvTiles audio')) video.play().catch(() => {});
     });
     startPolling();
   }
