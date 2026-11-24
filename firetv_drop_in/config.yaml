@@ -1,16 +1,25 @@
 name: Video Drop In
 slug: firetv_drop_in
 description: Family video calls with an optional Fire TV receiver
-version: "0.1.8"
+version: "0.2.0"
 arch:
   - aarch64
 startup: application
 boot: auto
 init: false
 host_network: true
+homeassistant_api: true
 map:
   - addon_config:rw
 options:
   tv_adb: ""
+  family_passphrase: ""
+  quiet_start: "22:00"
+  quiet_end: "08:00"
+  max_wakes_per_hour: 3
 schema:
   tv_adb: str
+  family_passphrase: password
+  quiet_start: match(^([01]\d|2[0-3]):[0-5]\d$)
+  quiet_end: match(^([01]\d|2[0-3]):[0-5]\d$)
+  max_wakes_per_hour: int(1,20)

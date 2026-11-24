@@ -2,3 +2,15 @@ configuration:
   tv_adb:
     name: Fire TV ADB address
     description: Local Fire TV IP address and ADB port, for example 192.168.1.x:5555.
+  family_passphrase:
+    name: Family passphrase
+    description: Shared phrase family members enter once per device to call. Changing it signs every device out. Mom's answer link is separate and keeps working.
+  quiet_start:
+    name: Quiet hours start
+    description: From this time (24-hour, e.g. 22:00) callers must confirm before the TV wakes.
+  quiet_end:
+    name: Quiet hours end
+    description: Quiet hours end at this time (24-hour, e.g. 08:00). Set start and end equal to turn quiet hours off.
+  max_wakes_per_hour:
+    name: TV wakes per hour
+    description: Most times the TV may be woken in any hour.

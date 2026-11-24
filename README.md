@@ -38,23 +38,42 @@ The app image installs android-tools-adb with Alpine's package manager.
 Signaling uses Python's standard library; the browser provides WebRTC.
 
 
+## Access
+
+- **Family passphrase.** Set it in the app configuration. Family members open
+  the public page, enter their name and the passphrase once, and the device
+  stays signed in for a year. The sign-in cookie is signed with a secret kept in
+  the app's private data folder, so it cannot be forged. Changing the
+  passphrase signs every device out.
+- **Mom's link.** The family page's **Text Mom her answer link** button shares a
+  private link. Opening it once signs Mom's phone in and removes the key from
+  the address, so the home-screen app keeps working. Mom's link can only answer;
+  it cannot wake the TV or start a call. It is separate from the passphrase, so
+  changing the passphrase does not affect it.
+- **Attempt limits.** Wrong passphrases and bad Mom links answer more slowly
+  each time. After 10 in an hour, new sign-ins are refused for an hour and Home
+  Assistant shows a notification. Devices already signed in are not affected.
+  If the Funnel relay passes the visitor's address (`X-Forwarded-For`), a
+  per-visitor limit of 5 also applies; the log says when it does.
+- **Quiet hours and wake limit.** Between `quiet_start` and `quiet_end`
+  (default 22:00 to 08:00) the caller must confirm before the TV wakes, and Home
+  Assistant shows a notification when someone does. The TV can be woken at most
+  `max_wakes_per_hour` times an hour (default 3).
+
 ## Calling Mom
 
-Text Mom the `/mom` link, then choose **Call Mom on the TV**. Mom can open the
-link before or during the call, turn on her camera to see a preview, choose her
-microphone, then tap **Answer**. Her camera and microphone go back to the caller;
-the caller's video remains on the TV. If she refreshes her page, she can tap
-Answer again to rejoin without the caller restarting the TV call. Both self-view
-previews are mirrored, movable, and collapsible. Turning the mic on requests the
-browser's echo cancellation, noise suppression, and automatic gain control.
+Text Mom her answer link once, then choose **Call Mom on the TV**. Mom's page
+shows who is calling. She can turn on her camera to see herself, turn on her
+microphone, then tap **Answer**. Her camera and microphone go back to the
+caller; the caller's video remains on the TV. If she refreshes her page, she can
+tap Answer again to rejoin without the caller restarting the TV call.
 
-The `/mom` page includes Android home-screen app metadata and icons. The public
-page is unauthenticated for this prototype. Access controls are a
-future discussion. WebRTC uses a public STUN server to help browsers find a
-direct path. TURN relay is not configured, so some restrictive networks may
-still block calls. Multiple callers are also a future feature. Echo from TV audio
-being picked up by Mom's separate phone is an open issue; browser echo cancellation
-may not remove it fully and needs a real-world check.
+The `/mom` page includes Android home-screen app metadata and icons. WebRTC uses
+a public STUN server to help browsers find a direct path. TURN relay is not
+configured, so some restrictive networks may still block calls. Multiple callers
+are a future feature. Echo from TV audio being picked up by Mom's separate phone
+is an open issue; browser echo cancellation may not remove it fully and needs a
+real-world check.
 
 ## Later consideration
 

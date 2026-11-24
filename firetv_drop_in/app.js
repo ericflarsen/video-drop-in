@@ -1,22 +1,86 @@
 (() => {
-  const params = new URLSearchParams(location.search);
-  const role = location.pathname === '/tv' ? 'tv' : location.pathname === '/mom' ? 'mom' : 'caller';
-  const room = params.get('room') || document.body.dataset.room;
+  const view = document.body.dataset.view;
+  const titleEl = document.querySelector('#title');
+  const introEl = document.querySelector('#intro');
+  const statusEl = document.querySelector('#status');
+  const readCookie = name => {
+    const match = document.cookie.split('; ').find(item => item.startsWith(name + '='));
+    return match ? decodeURIComponent(match.slice(name.length + 1)) : '';
+  };
+
+  // Screens that are not part of a call.
+  const NOTICES = {
+    setup: ['Almost ready', 'Set a family passphrase in the Video Drop In app settings in Home Assistant, then reload this page.'],
+    nolink: ['This link isn’t working', 'Ask your family to text you a new call link.']
+  };
+  if (NOTICES[view]) {
+    document.body.classList.add(view === 'nolink' ? 'mom' : 'caller');
+    [titleEl.textContent, introEl.textContent] = NOTICES[view];
+    statusEl.textContent = '';
+    return;
+  }
+  if (view === 'login') {
+    document.body.classList.add('caller');
+    document.querySelector('#login').hidden = false;
+    titleEl.textContent = 'Call Mom';
+    introEl.textContent = 'Sign in with the family passphrase.';
+    statusEl.textContent = '';
+    const form = document.querySelector('#loginForm');
+    const submit = document.querySelector('#loginSubmit');
+    document.querySelector('#loginName').value = readCookie('vdi_name');
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      submit.disabled = true;
+      statusEl.textContent = 'Checking…';
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name: form.name.value, passphrase: form.passphrase.value})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Sign-in failed.');
+        location.reload();
+      } catch (error) {
+        statusEl.textContent = error.message;
+        form.passphrase.value = '';
+        submit.disabled = false;
+      }
+    });
+    return;
+  }
+
+  const role = view === 'tv' ? 'tv' : view === 'mom' ? 'mom' : 'caller';
+  const room = document.body.dataset.room;
   const caller = role === 'caller';
   const tv = role === 'tv';
   const mom = role === 'mom';
   const peerConfig = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}]};
-  const status = document.querySelector('#status');
-  const showStatus = text => { status.textContent = text; };
+  const showStatus = text => { statusEl.textContent = text; };
 
   document.querySelector(caller ? '#caller' : mom ? '#mom' : '#receiver').hidden = false;
-  document.querySelector('#title').textContent = caller ? 'Video Drop In' : mom ? 'A call for Mom' : 'Connecting your call…';
-  document.querySelector('#intro').textContent = caller
-    ? 'Call the TV. Mom can join from her phone page.'
-    : mom ? ''
-    : 'Your family is connecting to the TV receiver.';
-  if (mom) document.querySelector('#intro').hidden = true;
-  showStatus(caller ? 'Ready' : mom ? 'Ready' : 'Receiver is listening for your call.');
+  document.body.classList.add(role);
+  titleEl.textContent = caller ? 'Call Mom' : mom ? 'No call right now' : 'Connecting your call…';
+  introEl.textContent = caller ? '' : mom ? '' : 'Your family is connecting to the TV receiver.';
+  showStatus(caller ? 'Ready to call.' : mom ? '' : 'Receiver is listening for your call.');
+
+  const MOM_STATES = {
+    waiting: ['No call right now', 'Keep this page open. When your family calls, a green Answer button appears here.'],
+    incoming: ['Your family is calling', 'They are on your TV. Turn on your camera and microphone if you like, then tap Answer.'],
+    incall: ['You’re on the call', 'Your family can see and hear you while your camera and microphone are on.']
+  };
+  let callerFrom = '';
+  function setMomState(state) {
+    if (!mom) return;
+    document.body.dataset.momState = state;
+    [titleEl.textContent, introEl.textContent] = MOM_STATES[state];
+    if (state === 'incoming' && callerFrom) titleEl.textContent = callerFrom + ' is calling';
+    if (state === 'incall' && callerFrom) titleEl.textContent = 'You’re talking with ' + callerFrom;
+  }
+  setMomState('waiting');
+  function setInCall(on) {
+    document.body.classList.toggle('in-call', on);
+  }
 
   let pc = null;
   let momPc = null;
@@ -41,7 +105,6 @@
   const momPreviewPanel = document.querySelector('#momPreviewPanel');
 
   setupPreviewPanel(previewPanel, preview, '#previewDragHandle', '#previewMinimize');
-  setupPreviewPanel(momPreviewPanel, momPreview, '#momPreviewDragHandle', '#momPreviewMinimize');
 
   function setupPreviewPanel(panel, video, handleSelector, buttonSelector) {
     if (!panel || !video) return;
@@ -89,15 +152,29 @@
     const response = await fetch(path, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(Object.assign({room}, body))
+      body: JSON.stringify(Object.assign({room, peer: role}, body))
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || ('Request failed (' + response.status + ').'));
+    if (!response.ok) {
+      const error = new Error(data.error || ('Request failed (' + response.status + ').'));
+      error.data = data;
+      throw error;
+    }
     return data;
   }
 
   async function prepareTV() {
-    await post('/api/prepare-tv', {});
+    try {
+      await post('/api/prepare-tv', {});
+    } catch (error) {
+      if (!(error.data && error.data.quiet)) throw error;
+      if (!window.confirm(error.message + ' Wake the TV anyway?')) {
+        const cancelled = new Error('Call not started. It’s quiet hours.');
+        cancelled.quiet = true;
+        throw cancelled;
+      }
+      await post('/api/prepare-tv', {urgent: true});
+    }
   }
 
   async function send(to, message) {
@@ -106,12 +183,12 @@
 
   async function poll() {
     try {
-      const response = await fetch('/api/poll?room=' + encodeURIComponent(room) + '&peer=' + role, {cache: 'no-store'});
+      const response = await fetch('/api/poll?room=' + encodeURIComponent(room || '') + '&peer=' + role, {cache: 'no-store'});
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || ('Request failed (' + response.status + ').'));
       for (const message of data.messages || []) await handle(message);
     } catch (error) {
-      showStatus('Signaling issue: ' + error.message);
+      showStatus(mom ? 'Trying to reconnect…' : 'Signaling issue: ' + error.message);
     }
   }
 
@@ -174,10 +251,12 @@
       await connectMomToCall();
     } else if (message.type === 'ready' && mom) {
       momReady = true;
+      callerFrom = message.from || '';
       document.querySelector('#momIncoming').hidden = false;
       document.querySelector('#momActions').hidden = false;
       document.querySelector('#momAnswer').hidden = false;
-      showStatus('Incoming call');
+      setMomState('incoming');
+      showStatus('');
     } else if (message.type === 'offer' && caller && message.channel === 'mom') {
       const peer = momPc || await makePeer('mom');
       await peer.setRemoteDescription(message.description);
@@ -228,9 +307,9 @@
     const camera = document.querySelector('#momCamera');
     const microphone = document.querySelector('#momMic');
     camera.setAttribute('aria-pressed', String(momCameraOn));
-    camera.textContent = momCameraOn ? 'Turn camera off' : 'Turn camera on';
+    camera.querySelector('.switch-state').textContent = momCameraOn ? 'On' : 'Off';
     microphone.setAttribute('aria-pressed', String(momMicOn));
-    microphone.textContent = momMicOn ? 'Turn mic off' : 'Turn mic on';
+    microphone.querySelector('.switch-state').textContent = momMicOn ? 'On' : 'Off';
   }
 
   async function acquireMomTrack(kind) {
@@ -271,7 +350,6 @@
       momPreview.pause();
       momPreview.srcObject = null;
       momPreview.hidden = true;
-      momPreviewPanel.hidden = true;
     }
   }
 
@@ -320,7 +398,7 @@
       pendingMomIce.length = 0;
     }
     previewPanel.hidden = true;
-    momPreviewPanel.hidden = true;
+    setInCall(false);
     for (const video of [remote, preview, callerRemote, momRemote, momPreview]) {
       if (video) {
         video.srcObject = null;
@@ -337,6 +415,7 @@
       document.querySelector('#momAnswer').disabled = false;
       document.querySelector('#momAnswer').hidden = false;
       document.querySelector('#momHangup').hidden = true;
+      setMomState(keepIncomingCall ? 'incoming' : 'waiting');
       if (!keepIncomingCall) {
         momReady = false;
         momCameraOn = false;
@@ -377,7 +456,16 @@
       showStatus('Open the public HTTPS page before sharing Mom’s call link.');
       return;
     }
-    const url = new URL('/mom', location.href).href;
+    let url;
+    try {
+      const response = await fetch('/api/mom-link', {cache: 'no-store'});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not get Mom’s link.');
+      url = new URL(data.path, location.href).href;
+    } catch (error) {
+      showStatus(error.message);
+      return;
+    }
     try {
       if (navigator.share) {
         await navigator.share({title: 'Video call', text: 'Tap here to join a video call with me.', url});
@@ -394,6 +482,19 @@
   }
 
   if (caller) {
+    const nameEl = document.querySelector('#callerName');
+    nameEl.textContent = readCookie('vdi_name') || 'family';
+    document.querySelector('#changeName').addEventListener('click', async () => {
+      const name = window.prompt('Your name, so Mom knows who’s calling:', readCookie('vdi_name'));
+      if (name === null) return;
+      try {
+        await post('/api/name', {name});
+        nameEl.textContent = readCookie('vdi_name') || 'family';
+      } catch (error) {
+        showStatus(error.message);
+      }
+    });
+
     async function startCall() {
       if (startingCall || pc) return;
       startingCall = true;
@@ -417,7 +518,8 @@
         await peer.setLocalDescription(offer);
         await send('tv', {type: 'offer', channel: 'tv', description: peer.localDescription});
         document.querySelector('#hangup').disabled = false;
-        showStatus('Calling the TV');
+        setInCall(true);
+        showStatus('Calling the TV…');
       } catch (error) {
         cleanup();
         showStatus(error.message);
@@ -427,7 +529,10 @@
       }
     }
 
-    document.querySelector('#startCall').addEventListener('click', () => startCall(true));
+    document.querySelector('#startCall').addEventListener('click', () => {
+      if (!window.confirm('This turns on Mom’s TV. Call now?')) return;
+      startCall(true);
+    });
     document.querySelector('#shareMomLink').addEventListener('click', shareMomLink);
     document.querySelector('#hangup').addEventListener('click', async () => {
       try { await send('tv', {type: 'hangup', channel: 'tv'}); } catch (_) {}
@@ -466,6 +571,7 @@
         document.querySelector('#momAnswer').hidden = true;
         document.querySelector('#momHangup').hidden = false;
         document.querySelector('#momHangup').disabled = false;
+        setMomState('incall');
         showStatus('Connecting…');
       } catch (error) {
         cleanup(true);
