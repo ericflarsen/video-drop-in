@@ -18,7 +18,8 @@ video { width: 100%; max-height: 68vh; background: #05080b; border-radius: 14px;
 .button-stack { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .button-stack button { width: 100%; margin: 0; }
 .incoming-card { padding: 18px; margin: 16px 0; border: 1px solid #526174; border-radius: 16px; background: #1b2632; text-align: center; }
-.incoming-title { font-size: 1.3rem; font-weight: 700; color: #fff; }
+.incoming-title { font-size: 1.3rem; font-weight: 700; color: #fff; margin: 0; }
+.mom-media-controls { margin-top: 14px; }
 .small { font-size: .9rem; color: #9fafbf; }
 body.theater { background: #000; overflow: hidden; }
 body.theater main { max-width: none; padding: 0; }
@@ -38,5 +39,5 @@ body.theater #remote { position: fixed; inset: 0; width: 100vw; height: 100vh; m
   .video-grid { grid-template-columns: 1fr; }
   #preview { width: 28vw; right: 10px; bottom: 10px; }
   #momRemote { max-height: 42vh; }
-  #momPreview { max-height: 24vh; }
+  #momPreview, #momRemote { max-height: 48vh; }
 }

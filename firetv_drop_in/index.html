@@ -10,39 +10,35 @@
 <body data-room="__ROOM__">
 <main>
   <h1 id="title">Video Drop In</h1>
-  <p id="intro">Start a call with your family. Camera and microphone access begin only when you choose to call or answer.</p>
+  <p id="intro">Mom can join from her phone to talk back.</p>
   <p id="status" role="status" aria-live="polite">Loading…</p>
 
   <section id="caller" hidden>
     <div class="button-stack">
-      <button id="startCall">Drop in to the TV</button>
-      <button id="startVideoOnly" class="secondary">TV video-only test</button>
-      <button id="wakeTv" class="secondary">Wake TV and open receiver</button>
       <button id="shareMomLink" class="secondary">Text Mom a call link</button>
-      <button id="callMom">Start a call with Mom</button>
+      <button id="startCall">Call Mom on the TV</button>
       <button id="hangup" class="danger" disabled>Hang up</button>
     </div>
-    <p class="small">The share button opens your phone or computer’s sharing options. Choose Messages to text Mom the link. The page does not send a message automatically.</p>
     <div class="video-grid">
       <video id="preview" autoplay muted playsinline hidden></video>
       <video id="callerRemote" autoplay playsinline hidden></video>
     </div>
-    <p class="small">Camera and microphone start only after you choose to begin a call. Media is sent directly between browsers; the Pi does not relay or record it.</p>
   </section>
 
   <section id="mom" hidden>
-    <p class="mom-intro">Keep this page open while waiting for a call. Your camera and microphone start only after you tap Answer. You can turn either one off during the call.</p>
-    <div id="momIncoming" class="incoming-card" hidden>
-      <p class="incoming-title">Incoming family call</p>
-    </div>
     <div class="video-grid">
       <video id="momRemote" autoplay playsinline hidden></video>
       <video id="momPreview" autoplay muted playsinline hidden></video>
     </div>
-    <div id="momControls" class="button-stack" hidden>
-      <button id="momCamera" class="toggle" type="button" aria-pressed="true">Turn camera off</button>
-      <button id="momMic" class="toggle" type="button" aria-pressed="true">Mute microphone</button>
-      <button id="momAnswer">Answer call</button>
+    <div class="button-stack mom-media-controls">
+      <button id="momCamera" class="toggle" type="button" aria-pressed="false">Turn camera on</button>
+      <button id="momMic" class="toggle" type="button" aria-pressed="false">Turn mic on</button>
+    </div>
+    <div id="momIncoming" class="incoming-card" hidden>
+      <p class="incoming-title">Incoming call</p>
+    </div>
+    <div id="momActions" class="button-stack" hidden>
+      <button id="momAnswer" type="button" hidden>Answer</button>
       <button id="momHangup" class="danger" type="button" hidden>Hang up</button>
     </div>
   </section>

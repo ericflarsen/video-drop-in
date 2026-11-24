@@ -182,6 +182,13 @@ class Handler(BaseHTTPRequestHandler):
         if data.get("to") not in ("caller", "tv", "mom") or not isinstance(data.get("message"), dict):
             return self.send_json({"error": "invalid signaling message"}, 400)
         with LOCK:
+            if data["to"] == "caller" and data["message"].get("type") == "join":
+                # A newly opened or refreshed Mom page requests a fresh offer; discard stale messages.
+                QUEUES[ROOM]["mom"] = []
+                QUEUES[ROOM]["caller"] = [
+                    item for item in QUEUES[ROOM]["caller"]
+                    if item.get("channel") != "mom" and item.get("type") != "join"
+                ]
             QUEUES[ROOM][data["to"]].append(data["message"])
         return self.send_json({"ok": True})
 

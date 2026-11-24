@@ -40,17 +40,16 @@ Signaling uses Python's standard library; the browser provides WebRTC.
 
 ## Calling Mom
 
-Open the caller page and choose Text Mom a call link to open the device's sharing
-menu. Select Messages to text her the link, then choose Start a call with Mom.
-The share button prepares the message but does not send it automatically.
+Text Mom the `/mom` link, then choose **Call Mom on the TV**. Mom can open the
+link before or during the call, turn on her camera to see a preview, choose her
+microphone, then tap **Answer**. Her camera and microphone go back to the caller;
+the caller's video remains on the TV. If she refreshes her page, she can tap
+Answer again to rejoin without the caller restarting the TV call.
 
-Mom's page asks for camera and microphone access only when she answers. Large
-buttons let her turn the camera or microphone off or back on during a call, and
-she can hang up at any time. The link is the public HTTPS address followed by
-/mom.
-
-WebRTC media is sent directly between browsers. STUN/TURN relay configuration
-is still outstanding, so calls between some networks may not connect yet.
+The public page is unauthenticated for this prototype. Access controls are a
+future discussion. WebRTC uses a public STUN server to help browsers find a
+direct path. TURN relay is not configured, so some restrictive networks may
+still block calls. Multiple callers are also a future feature.
 
 ## Later consideration
 
