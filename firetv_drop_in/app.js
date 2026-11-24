@@ -290,17 +290,19 @@
     handle.addEventListener('pointerdown', event => {
       if (event.target.closest('button')) return;
       const rect = panel.getBoundingClientRect();
-      drag = {x: event.clientX, y: event.clientY, left: rect.left, top: rect.top};
-      panel.style.left = rect.left + 'px';
-      panel.style.top = rect.top + 'px';
+      const box = panel.offsetParent.getBoundingClientRect();
+      drag = {x: event.clientX, y: event.clientY, left: rect.left - box.left, top: rect.top - box.top};
+      panel.style.left = drag.left + 'px';
+      panel.style.top = drag.top + 'px';
       panel.style.right = 'auto';
       handle.setPointerCapture(event.pointerId);
     });
     handle.addEventListener('pointermove', event => {
       if (!drag) return;
-      const rect = panel.getBoundingClientRect();
-      panel.style.left = Math.max(0, Math.min(window.innerWidth - rect.width, drag.left + event.clientX - drag.x)) + 'px';
-      panel.style.top = Math.max(0, Math.min(window.innerHeight - rect.height, drag.top + event.clientY - drag.y)) + 'px';
+      // Stay inside the video area.
+      const parent = panel.offsetParent;
+      panel.style.left = Math.max(0, Math.min(parent.clientWidth - panel.offsetWidth, drag.left + event.clientX - drag.x)) + 'px';
+      panel.style.top = Math.max(0, Math.min(parent.clientHeight - panel.offsetHeight, drag.top + event.clientY - drag.y)) + 'px';
     });
     const stop = event => {
       drag = null;
@@ -321,7 +323,6 @@
     const startBtn = document.querySelector('#startCall');
     const startLabel = startBtn.querySelector('.label');
     const hangupBtn = document.querySelector('#hangup');
-    const tvHint = document.querySelector('#tvHint');
     const nameEl = document.querySelector('#callerName');
     let stream = null;
     let inCall = false;
@@ -351,13 +352,11 @@
         titleEl.textContent = joinNames(names) + (names.length > 1 ? ' are' : ' is') + ' on a call with Mom';
         startLabel.textContent = full ? 'The call is full' : 'Join the call';
         startBtn.disabled = full || busy;
-        tvHint.hidden = true;
         showStatus(full ? 'Up to ' + MAX_CALLERS + ' family members can be on a call.' : 'Joining won’t wake the TV again.');
       } else {
         titleEl.textContent = 'Call Mom';
         startLabel.textContent = 'Call Mom on the TV';
         startBtn.disabled = busy;
-        tvHint.hidden = false;
         showStatus('Ready to call.');
       }
     }
@@ -420,7 +419,6 @@
     async function enterCall() {
       if (busy || inCall) return;
       const joining = callState.active && callState.callers.length > 0;
-      if (!joining && !window.confirm('This turns on Mom’s TV. Call now?')) return;
       busy = true;
       startBtn.disabled = true;
       try {
