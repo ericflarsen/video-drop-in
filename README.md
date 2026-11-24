@@ -46,7 +46,8 @@ microphone, then tap **Answer**. Her camera and microphone go back to the caller
 the caller's video remains on the TV. If she refreshes her page, she can tap
 Answer again to rejoin without the caller restarting the TV call.
 
-The public page is unauthenticated for this prototype. Access controls are a
+The `/mom` page includes Android home-screen app metadata and icons. The public
+page is unauthenticated for this prototype. Access controls are a
 future discussion. WebRTC uses a public STUN server to help browsers find a
 direct path. TURN relay is not configured, so some restrictive networks may
 still block calls. Multiple callers are also a future feature.
