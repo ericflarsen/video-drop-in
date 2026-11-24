@@ -34,9 +34,56 @@
   const pendingMomIce = [];
   const remote = document.querySelector('#remote');
   const preview = document.querySelector('#preview');
+  const previewPanel = document.querySelector('#previewPanel');
   const callerRemote = document.querySelector('#callerRemote');
   const momRemote = document.querySelector('#momRemote');
   const momPreview = document.querySelector('#momPreview');
+  const momPreviewPanel = document.querySelector('#momPreviewPanel');
+
+  setupPreviewPanel(previewPanel, preview, '#previewDragHandle', '#previewMinimize');
+  setupPreviewPanel(momPreviewPanel, momPreview, '#momPreviewDragHandle', '#momPreviewMinimize');
+
+  function setupPreviewPanel(panel, video, handleSelector, buttonSelector) {
+    if (!panel || !video) return;
+    const handle = panel.querySelector(handleSelector);
+    const button = panel.querySelector(buttonSelector);
+    let drag = null;
+    button.addEventListener('click', () => {
+      const minimized = panel.classList.toggle('minimized');
+      video.hidden = minimized;
+      button.textContent = minimized ? '+' : '−';
+      button.setAttribute('aria-label', minimized ? 'Show preview' : 'Minimize preview');
+    });
+    handle.addEventListener('pointerdown', event => {
+      if (event.target.closest('button')) return;
+      const rect = panel.getBoundingClientRect();
+      drag = {x: event.clientX, y: event.clientY, left: rect.left, top: rect.top};
+      panel.style.left = rect.left + 'px';
+      panel.style.top = rect.top + 'px';
+      panel.style.right = 'auto';
+      handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('pointermove', event => {
+      if (!drag) return;
+      const rect = panel.getBoundingClientRect();
+      const left = Math.max(0, Math.min(window.innerWidth - rect.width, drag.left + event.clientX - drag.x));
+      const top = Math.max(0, Math.min(window.innerHeight - rect.height, drag.top + event.clientY - drag.y));
+      panel.style.left = left + 'px';
+      panel.style.top = top + 'px';
+    });
+    const stopDragging = event => {
+      drag = null;
+      if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    };
+    handle.addEventListener('pointerup', stopDragging);
+    handle.addEventListener('pointercancel', stopDragging);
+  }
+
+  function showPreview(panel, video, stream) {
+    video.srcObject = stream;
+    video.hidden = panel.classList.contains('minimized');
+    panel.hidden = false;
+  }
 
   async function post(path, body) {
     const response = await fetch(path, {
@@ -193,13 +240,12 @@
     const isVideo = kind === 'video';
     const captured = await navigator.mediaDevices.getUserMedia(isVideo
       ? {audio: false, video: {width: {ideal: 1280}, height: {ideal: 720}}}
-      : {audio: true, video: false});
+      : {audio: {echoCancellation: {ideal: true}, noiseSuppression: {ideal: true}, autoGainControl: {ideal: true}}, video: false});
     const track = captured.getTracks()[0];
     if (!stream) stream = new MediaStream();
     stream.addTrack(track);
     if (isVideo) {
-      momPreview.srcObject = stream;
-      momPreview.hidden = false;
+      showPreview(momPreviewPanel, momPreview, stream);
     }
     if (pc) {
       const transceiver = pc.getTransceivers().find(item => item.receiver.track.kind === kind);
@@ -225,6 +271,7 @@
       momPreview.pause();
       momPreview.srcObject = null;
       momPreview.hidden = true;
+      momPreviewPanel.hidden = true;
     }
   }
 
@@ -244,8 +291,7 @@
       track.enabled = true;
       if (isVideo) {
         momCameraOn = true;
-        momPreview.srcObject = stream;
-        momPreview.hidden = false;
+        showPreview(momPreviewPanel, momPreview, stream);
       } else {
         momMicOn = true;
       }
@@ -273,6 +319,8 @@
       pendingIce.length = 0;
       pendingMomIce.length = 0;
     }
+    previewPanel.hidden = true;
+    momPreviewPanel.hidden = true;
     for (const video of [remote, preview, callerRemote, momRemote, momPreview]) {
       if (video) {
         video.srcObject = null;
@@ -361,8 +409,7 @@
           audio: true,
           video: {width: {ideal: 1280}, height: {ideal: 720}, frameRate: {ideal: 24, max: 30}}
         });
-        preview.srcObject = stream;
-        preview.hidden = false;
+        showPreview(previewPanel, preview, stream);
         const peer = await makePeer('tv');
         stream.getTracks().forEach(track => peer.addTrack(track, stream));
         startPolling();

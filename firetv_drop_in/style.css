@@ -12,7 +12,12 @@ button:disabled { opacity: .55; cursor: default; }
 #status { padding: 14px 16px; min-height: 3.4em; border-radius: 10px; background: #1b2632; }
 button:focus-visible { outline: 3px solid #b6d3ff; outline-offset: 2px; }
 video { width: 100%; max-height: 68vh; background: #05080b; border-radius: 14px; object-fit: contain; }
-#preview { width: min(220px, 35vw); max-height: 28vh; position: fixed; right: 18px; bottom: 18px; border: 2px solid #526174; }
+.self-preview { position: fixed; z-index: 20; top: calc(12px + env(safe-area-inset-top, 0px)); right: 12px; width: min(40vw, 220px); border: 1px solid #526174; border-radius: 12px; overflow: hidden; background: #10151b; box-shadow: 0 4px 18px #0008; }
+.preview-bar { display: flex; align-items: center; justify-content: space-between; min-height: 36px; padding: 2px 6px 2px 10px; background: #1b2632; color: #eef3f8; font-size: .82rem; font-weight: 700; cursor: move; touch-action: none; user-select: none; }
+.preview-minimize { min-height: 30px; min-width: 34px; margin: 0; padding: 0 8px; border-radius: 8px; background: #354354; font-size: 1.2rem; line-height: 1; }
+.self-preview video { display: block; width: 100%; height: min(22vh, 150px); max-height: none; border-radius: 0; object-fit: cover; }
+.self-preview video[hidden] { display: none; }
+#preview, #momPreview { transform: scaleX(-1); }
 .video-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
 .video-grid video:only-child { grid-column: 1 / -1; }
 .button-stack { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -37,7 +42,6 @@ body.theater #remote { position: fixed; inset: 0; width: 100vw; height: 100vh; m
   .button-stack { grid-template-columns: 1fr; gap: 10px; }
   .button-stack button { min-height: 64px; font-size: 1.08rem; }
   .video-grid { grid-template-columns: 1fr; }
-  #preview { width: 28vw; right: 10px; bottom: 10px; }
-  #momRemote { max-height: 42vh; }
-  #momPreview, #momRemote { max-height: 48vh; }
+  .self-preview { width: min(42vw, 180px); right: 10px; }
+  .self-preview video { height: min(20vh, 125px); }
 }

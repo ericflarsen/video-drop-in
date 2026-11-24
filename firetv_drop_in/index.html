@@ -23,15 +23,25 @@
       <button id="startCall">Call Mom on the TV</button>
       <button id="hangup" class="danger" disabled>Hang up</button>
     </div>
-    <div class="video-grid">
+    <div id="previewPanel" class="self-preview" hidden>
+      <div id="previewDragHandle" class="preview-bar">
+        <span>Your camera</span>
+        <button id="previewMinimize" class="preview-minimize" type="button" aria-label="Minimize preview">−</button>
+      </div>
       <video id="preview" autoplay muted playsinline hidden></video>
+    </div>
+    <div class="video-grid">
       <video id="callerRemote" autoplay playsinline hidden></video>
     </div>
   </section>
 
   <section id="mom" hidden>
-    <div class="video-grid">
-      <video id="momRemote" autoplay playsinline hidden></video>
+    <video id="momRemote" autoplay playsinline hidden></video>
+    <div id="momPreviewPanel" class="self-preview" hidden>
+      <div id="momPreviewDragHandle" class="preview-bar">
+        <span>Your camera</span>
+        <button id="momPreviewMinimize" class="preview-minimize" type="button" aria-label="Minimize preview">−</button>
+      </div>
       <video id="momPreview" autoplay muted playsinline hidden></video>
     </div>
     <div class="button-stack mom-media-controls">

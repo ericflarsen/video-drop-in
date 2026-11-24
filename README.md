@@ -44,13 +44,17 @@ Text Mom the `/mom` link, then choose **Call Mom on the TV**. Mom can open the
 link before or during the call, turn on her camera to see a preview, choose her
 microphone, then tap **Answer**. Her camera and microphone go back to the caller;
 the caller's video remains on the TV. If she refreshes her page, she can tap
-Answer again to rejoin without the caller restarting the TV call.
+Answer again to rejoin without the caller restarting the TV call. Both self-view
+previews are mirrored, movable, and collapsible. Turning the mic on requests the
+browser's echo cancellation, noise suppression, and automatic gain control.
 
 The `/mom` page includes Android home-screen app metadata and icons. The public
 page is unauthenticated for this prototype. Access controls are a
 future discussion. WebRTC uses a public STUN server to help browsers find a
 direct path. TURN relay is not configured, so some restrictive networks may
-still block calls. Multiple callers are also a future feature.
+still block calls. Multiple callers are also a future feature. Echo from TV audio
+being picked up by Mom's separate phone is an open issue; browser echo cancellation
+may not remove it fully and needs a real-world check.
 
 ## Later consideration
 
