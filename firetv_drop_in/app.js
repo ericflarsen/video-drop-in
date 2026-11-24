@@ -183,7 +183,7 @@
     camera.setAttribute('aria-pressed', String(momCameraOn));
     camera.textContent = momCameraOn ? 'Turn camera off' : 'Turn camera on';
     microphone.setAttribute('aria-pressed', String(momMicOn));
-    microphone.textContent = momMicOn ? 'Mute mic' : 'Turn mic on';
+    microphone.textContent = momMicOn ? 'Turn mic off' : 'Turn mic on';
   }
 
   async function acquireMomTrack(kind) {
@@ -209,18 +209,33 @@
     return track;
   }
 
+  async function stopMomTrack(kind) {
+    const track = stream && stream.getTracks().find(item => item.kind === kind);
+    if (pc) {
+      const transceiver = pc.getTransceivers().find(item => item.receiver.track.kind === kind);
+      if (transceiver && transceiver.sender.track) {
+        try { await transceiver.sender.replaceTrack(null); } catch (_) {}
+      }
+    }
+    if (track) {
+      stream.removeTrack(track);
+      track.stop();
+    }
+    if (kind === 'video') {
+      momPreview.pause();
+      momPreview.srcObject = null;
+      momPreview.hidden = true;
+    }
+  }
+
   async function toggleMomMedia(kind) {
     const isVideo = kind === 'video';
     const next = !(isVideo ? momCameraOn : momMicOn);
     const existingTrack = stream && stream.getTracks().find(track => track.kind === kind);
     if (!next) {
-      if (existingTrack) existingTrack.enabled = false;
-      if (isVideo) {
-        momCameraOn = false;
-        momPreview.hidden = true;
-      } else {
-        momMicOn = false;
-      }
+      await stopMomTrack(kind);
+      if (isVideo) momCameraOn = false;
+      else momMicOn = false;
       updateMomMediaButtons();
       return;
     }
@@ -237,7 +252,7 @@
       updateMomMediaButtons();
     } catch (error) {
       showStatus(error.name === 'NotAllowedError'
-        ? 'Allow camera or microphone access in your iPhone settings.'
+        ? 'Allow camera or mic access in your browser settings.'
         : error.message);
     }
   }

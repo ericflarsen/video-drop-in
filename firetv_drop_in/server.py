@@ -127,8 +127,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/healthz":
             return self.send_json({"ok": True})
-        static_files = {"/style.css": ("style.css", "text/css; charset=utf-8"),
-                        "/app.js": ("app.js", "text/javascript; charset=utf-8")}
+        static_files = {
+            "/style.css": ("style.css", "text/css; charset=utf-8"),
+            "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/mom.webmanifest": ("mom.webmanifest", "application/manifest+json; charset=utf-8"),
+            "/icon-192.png": ("icon-192.png", "image/png"),
+            "/icon-512.png": ("icon-512.png", "image/png"),
+        }
         if parsed.path in static_files:
             filename, content_type = static_files[parsed.path]
             body = (ROOT / filename).read_bytes()
