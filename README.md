@@ -38,6 +38,23 @@ The app image installs android-tools-adb with Alpine's package manager.
 Signaling uses Python's standard library; the browser provides WebRTC.
 
 
+## Call alerts on Mom's phone
+
+When someone starts a call, Mom's phone rings with a notification, even if the
+Mom's Call app is closed. Tapping it opens the app on the Answer screen.
+
+- **iPhone:** alerts only work from the Home Screen app. Open Mom's link in
+  Safari, tap Share, then **Add to Home Screen**, and open Mom's Call from the
+  Home Screen. Needs iOS 16.4 or later.
+- **Android:** works from Chrome, installed or not.
+- Then tap **Ring my phone when family calls** once and allow notifications.
+
+Only starting a call rings Mom; joining a call already in progress does not.
+Alerts expire after a minute, so a phone that was offline won't ring late. The
+app keeps its push signing key and Mom's devices in its private data folder,
+and drops a device automatically when its browser unsubscribes. No call content
+goes through the push service: only the caller's name.
+
 ## Access
 
 - **Family passphrase.** Set it in the app configuration. Family members open
@@ -45,8 +62,10 @@ Signaling uses Python's standard library; the browser provides WebRTC.
   stays signed in for a year. The sign-in cookie is signed with a secret kept in
   the app's private data folder, so it cannot be forged. Changing the
   passphrase signs every device out.
-- **Mom's link.** The family page's **Text Mom her answer link** button shares a
-  private link. Opening it once signs Mom's phone in and removes the key from
+- **Mom's link.** A private link that signs Mom's phone in. To get it for a new
+  phone, open `/api/mom-link` on the public page while signed in as family; it
+  returns the path to add after the page address. Opening it once signs Mom's
+  phone in and removes the key from
   the address, so the home-screen app keeps working. Mom's link can only answer;
   it cannot wake the TV or start a call. It is separate from the passphrase, so
   changing the passphrase does not affect it.
@@ -62,7 +81,7 @@ Signaling uses Python's standard library; the browser provides WebRTC.
 
 ## Calling Mom
 
-Text Mom her answer link once, then choose **Call Mom on the TV**. Mom's page
+Choose **Call Mom on the TV**. Mom's page
 shows who is calling. She can turn on her camera to see herself, turn on her
 microphone, then tap **Answer**. If she refreshes her page, she can tap Answer
 again to rejoin.

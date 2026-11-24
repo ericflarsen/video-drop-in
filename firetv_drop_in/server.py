@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from urllib.request import Request, urlopen
+import base64
 import hashlib
 import hmac
 import re
@@ -17,6 +18,14 @@ import secrets
 import subprocess
 import threading
 import time
+
+try:  # Web Push for Mom's call alerts. Calls still work without it.
+    from cryptography.hazmat.primitives import serialization
+    from py_vapid import Vapid
+    from pywebpush import WebPushException, webpush
+    PUSH_LIBS = True
+except ImportError:
+    PUSH_LIBS = False
 
 
 ROOT = Path(__file__).resolve().parent
@@ -88,6 +97,119 @@ def family_token():
 
 def mom_token():
     return sign("mom|" + MOM_KEY)
+
+
+# ---------- Mom's call alerts (Web Push) ----------
+
+PUSH_LOCK = threading.Lock()
+SUBS_PATH = DATA / "push_subscriptions.json"
+MAX_SUBS = 10
+PUSH_TTL = 60  # seconds; a ring that can't be delivered within a minute is stale
+# Only real browser push services, so a page can't make this server post elsewhere.
+PUSH_HOSTS = re.compile(
+    r"^(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|"
+    r"([a-z0-9-]+\.)*push\.apple\.com|([a-z0-9-]+\.)*notify\.windows\.com)$"
+)
+
+
+def load_vapid():
+    """This server's push signing key, created once and kept in the data folder."""
+    if not PUSH_LIBS:
+        print("Call alerts are off: the pywebpush library is not installed.", flush=True)
+        return None, ""
+    path = DATA / "vapid_private.pem"
+    try:
+        if path.exists():
+            vapid = Vapid.from_file(str(path))
+        else:
+            DATA.mkdir(parents=True, exist_ok=True)
+            vapid = Vapid()
+            vapid.generate_keys()
+            vapid.save_key(str(path))
+            path.chmod(0o600)
+        raw = vapid.public_key.public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+        )
+        return vapid, base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    except Exception as error:  # noqa: BLE001
+        print(f"Call alerts are off: could not load the push key: {error}", flush=True)
+        return None, ""
+
+
+VAPID, VAPID_PUBLIC = load_vapid()
+
+
+def load_subs():
+    try:
+        subs = json.loads(SUBS_PATH.read_text())
+        return subs if isinstance(subs, list) else []
+    except (FileNotFoundError, ValueError):
+        return []
+
+
+def save_subs(subs):
+    SUBS_PATH.write_text(json.dumps(subs))
+    SUBS_PATH.chmod(0o600)
+
+
+def clean_subscription(value):
+    """A browser push subscription, or None if it isn't one we'll send to."""
+    if not isinstance(value, dict):
+        return None
+    endpoint = str(value.get("endpoint", ""))
+    keys = value.get("keys") if isinstance(value.get("keys"), dict) else {}
+    p256dh, auth = str(keys.get("p256dh", "")), str(keys.get("auth", ""))
+    parsed = urlparse(endpoint)
+    if (parsed.scheme != "https" or not PUSH_HOSTS.match(parsed.hostname or "")
+            or len(endpoint) > 1024 or not (0 < len(p256dh) <= 200) or not (0 < len(auth) <= 100)):
+        return None
+    return {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
+
+
+def alert_mom(who):
+    """Ring Mom's phone through every device that turned on call alerts. Best effort."""
+    if VAPID is None:
+        return
+    with PUSH_LOCK:
+        subs = load_subs()
+    if not subs:
+        print("No Mom devices have call alerts turned on.", flush=True)
+        return
+    payload = json.dumps({
+        "title": f"{who} is calling" if who else "Your family is calling",
+        "body": "Tap to answer.",
+        "url": "/mom",
+    })
+
+    def send():
+        sent, dead = 0, set()
+        for sub in subs:
+            try:
+                webpush(
+                    {"endpoint": sub["endpoint"], "keys": sub["keys"]},
+                    data=payload,
+                    vapid_private_key=VAPID,
+                    # A fresh dict each time: pywebpush fills in this endpoint's audience.
+                    vapid_claims={"sub": sub.get("contact") or "mailto:video-drop-in@example.com"},
+                    ttl=PUSH_TTL,
+                    headers={"Urgency": "high"},
+                    timeout=10,
+                )
+                sent += 1
+            except WebPushException as error:
+                status = getattr(error.response, "status_code", None)
+                if status in (404, 410):
+                    dead.add(sub["endpoint"])  # the browser unsubscribed or the app was removed
+                print(f"Call alert failed ({status or error}).", flush=True)
+            except Exception as error:  # noqa: BLE001
+                print(f"Call alert failed: {error}", flush=True)
+        if dead:
+            with PUSH_LOCK:
+                save_subs([s for s in load_subs() if s["endpoint"] not in dead])
+            print(f"Removed {len(dead)} expired call-alert device(s).", flush=True)
+        print(f"Sent call alert to {sent} of {len(subs)} Mom device(s).", flush=True)
+
+    threading.Thread(target=send, daemon=True).start()
 
 
 def prune(window, now, seconds=HOUR):
@@ -398,6 +520,7 @@ class Handler(BaseHTTPRequestHandler):
         static_files = {
             "/style.css": ("style.css", "text/css; charset=utf-8"),
             "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/sw.js": ("sw.js", "text/javascript; charset=utf-8"),
             "/mom.webmanifest": ("mom.webmanifest", "application/manifest+json; charset=utf-8"),
             "/icon-192.png": ("icon-192.png", "image/png"),
             "/icon-512.png": ("icon-512.png", "image/png"),
@@ -445,6 +568,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "sign in first"}, 403)
             return self.send_json({"path": "/mom/" + MOM_KEY})
 
+        if parsed.path == "/api/push/key":
+            if "mom" not in self.roles():
+                return self.send_json({"error": "not signed in"}, 403)
+            return self.send_json({"key": VAPID_PUBLIC or None})
+
         if parsed.path == "/api/state":
             roles = self.roles()
             if not roles & {"caller", "mom"}:
@@ -476,7 +604,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         if path not in ("/api/login", "/api/name", "/api/send", "/api/start", "/api/join",
-                        "/api/leave", "/api/play-tv"):
+                        "/api/leave", "/api/play-tv", "/api/push/subscribe"):
             return self.send_json({"error": "not found"}, 404)
         try:
             data = self.read_json()
@@ -506,6 +634,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "sign in first"}, 403)
             name = " ".join(str(data.get("name", "")).split())[:40]
             return self.send_json({"ok": True}, extra=(self.cookie("vdi_name", quote(name), http_only=False),))
+
+        if path == "/api/push/subscribe":
+            if "mom" not in roles:
+                return self.send_json({"error": "not signed in"}, 403)
+            if VAPID is None:
+                return self.send_json({"error": "Call alerts are not available."}, 503)
+            sub = clean_subscription(data.get("subscription"))
+            if not sub:
+                return self.send_json({"error": "That browser's alerts are not supported."}, 400)
+            # Apple wants a contact URL in the push signature; this page's own address works.
+            origin = self.headers.get("Origin", "")
+            if origin.startswith("https://") and len(origin) < 200:
+                sub["contact"] = origin
+            with PUSH_LOCK:
+                subs = [s for s in load_subs() if s["endpoint"] != sub["endpoint"]]
+                subs.append(sub)
+                save_subs(subs[-MAX_SUBS:])
+            print("A Mom device turned on call alerts.", flush=True)
+            return self.send_json({"ok": True})
 
         cid = str(data.get("id", ""))
 
@@ -566,6 +713,7 @@ class Handler(BaseHTTPRequestHandler):
                 CALL["starting"] = False
                 CALL["active"] = True
                 add_caller(cid, name)
+            alert_mom(name)
             return self.send_json({"callers": roster()})
 
         if path == "/api/play-tv":

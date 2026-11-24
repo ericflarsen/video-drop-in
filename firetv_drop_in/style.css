@@ -97,6 +97,9 @@ body.mom #intro { text-align: center; font-size: 1.1rem; }
 .switch[aria-pressed="true"] .switch-state { color: #7ee2a6; font-weight: 700; }
 
 .mom-actions { margin-top: 18px; }
+.mom-alerts { margin-top: 18px; display: grid; gap: 10px; }
+.mom-alerts .hint { font-size: 1rem; margin: 0; }
+body[data-mom-state="incall"] .mom-alerts { display: none; }
 .btn-answer, .btn-huge { min-height: 84px; font-size: 1.5rem; border-radius: 22px; }
 .btn-answer .icon, .btn-huge .icon { width: 1.4em; height: 1.4em; }
 .btn-answer { animation: ring 1.6s ease-in-out infinite; }
@@ -115,13 +118,6 @@ body.theater .tv-tiles .tile-name { font-size: 1.3rem; left: 16px; bottom: 16px;
 .toast { position: fixed; z-index: 30; top: 32px; left: 50%; transform: translateX(-50%); padding: 14px 28px; border-radius: 999px; background: #000c; color: #fff; font-size: 1.6rem; font-weight: 700; }
 #enterFullscreen { position: fixed; z-index: 5; inset: 0; width: 100vw; height: 100vh; margin: 0; border: 0; border-radius: 0; background: #111923; color: #fff; font: inherit; font-size: 1.6rem; font-weight: 700; display: grid; place-content: center; text-align: center; }
 #enterFullscreen span { display: block; margin-top: 10px; font-size: .85em; font-weight: 400; color: #c6d1dc; }
-
-@media (min-width: 640px) {
-  .caller-controls { grid-template-columns: 1fr 1fr; }
-  #startCall, #hangup { grid-column: 1; grid-row: 1; }
-  .caller-controls .hint { grid-column: 1; grid-row: 2; }
-  #shareMomLink { grid-column: 2; grid-row: 1; }
-}
 
 /* ---------- Sign-in ---------- */
 .form { display: grid; gap: 8px; }

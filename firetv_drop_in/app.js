@@ -295,7 +295,6 @@
         showStatus(error.message);
       }
     });
-    document.querySelector('#shareMomLink').addEventListener('click', shareMomLink);
 
     const others = () => roster.filter(item => item.id !== myId);
     function renderIdle() {
@@ -510,14 +509,16 @@
     let answered = false;
     let roster = [];
 
+    let alertsOn = false;
     const STATES = {
       waiting: ['No call right now', 'Keep this page open. When your family calls, a green Answer button appears here.'],
+      waitingAlerts: ['No call right now', 'Your phone will ring when your family calls. Tap the alert to answer.'],
       incoming: ['Your family is calling', 'They are on your TV. Turn on your camera and microphone if you like, then tap Answer.'],
       incall: ['You’re on the call', 'Your family can see and hear you while your camera and microphone are on.']
     };
     function setState(state) {
       document.body.dataset.momState = state;
-      [titleEl.textContent, introEl.textContent] = STATES[state];
+      [titleEl.textContent, introEl.textContent] = STATES[state === 'waiting' && alertsOn ? 'waitingAlerts' : state];
       const names = joinNames(roster.map(item => item.name));
       if (state === 'incoming' && roster.length) titleEl.textContent = names + (roster.length > 1 ? ' are' : ' is') + ' calling';
       if (state === 'incall' && roster.length) titleEl.textContent = 'You’re talking with ' + names;
@@ -658,6 +659,87 @@
     document.querySelector('#momCamera').addEventListener('click', () => toggle('video'));
     document.querySelector('#momMic').addEventListener('click', () => toggle('audio'));
 
+    // ---------- Call alerts: ring the phone even when this app is closed ----------
+    const alertsBox = document.querySelector('#momAlerts');
+    const alertsBtn = document.querySelector('#momAlertsOn');
+    const alertsHint = document.querySelector('#momAlertsHint');
+    const keyBytes = key => {
+      const b64 = (key + '='.repeat((4 - key.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+      return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    };
+    const sameBytes = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+    function showAlerts(button, hint) {
+      alertsBox.hidden = !button && !hint;
+      alertsBtn.hidden = !button;
+      alertsHint.textContent = hint || '';
+    }
+    function clearCallAlerts() {
+      if (!('serviceWorker' in navigator)) return;
+      navigator.serviceWorker.getRegistration().then(reg => reg && reg.getNotifications({tag: 'call'}))
+        .then(list => (list || []).forEach(item => item.close())).catch(() => {});
+    }
+    async function subscribeAlerts(key) {
+      const reg = await navigator.serviceWorker.ready;
+      const appKey = keyBytes(key);
+      let sub = await reg.pushManager.getSubscription();
+      const oldKey = sub && sub.options && sub.options.applicationServerKey;
+      if (sub && oldKey && !sameBytes(new Uint8Array(oldKey), appKey)) {
+        await sub.unsubscribe();
+        sub = null;
+      }
+      if (!sub) sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: appKey});
+      await post('/api/push/subscribe', {subscription: sub.toJSON()});
+    }
+    function alertsReady() {
+      alertsOn = true;
+      showAlerts(false, '');
+      if (document.body.dataset.momState === 'waiting') setState('waiting');
+    }
+    async function setupAlerts() {
+      const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        // iPhones only allow alerts for pages added to the Home Screen.
+        if (ios && !installed) showAlerts(false, 'To have your phone ring when family calls, tap the Share button, then “Add to Home Screen”, and open Mom’s Call from there.');
+        return;
+      }
+      let key;
+      try {
+        await navigator.serviceWorker.register('/sw.js');
+        key = (await getJSON('/api/push/key')).key;
+      } catch (_) { return; }
+      if (!key) return;
+      if (Notification.permission === 'granted') {
+        try { await subscribeAlerts(key); alertsReady(); } catch (_) { showAlerts(true, ''); }
+      } else if (Notification.permission === 'denied') {
+        showAlerts(false, 'Call alerts are blocked. Turn on notifications for Mom’s Call in your phone’s Settings.');
+      } else {
+        showAlerts(true, '');
+      }
+      alertsBtn.addEventListener('click', async () => {
+        alertsBtn.disabled = true;
+        try {
+          // Must be the first thing after the tap, or iPhones ignore it.
+          const permission = await Notification.requestPermission();
+          if (permission !== 'granted') {
+            showAlerts(permission === 'default', permission === 'denied' ? 'Call alerts are blocked. Turn on notifications for Mom’s Call in your phone’s Settings.' : '');
+            return;
+          }
+          await subscribeAlerts(key);
+          alertsReady();
+        } catch (error) {
+          showAlerts(true, 'Could not turn on call alerts: ' + error.message);
+        } finally {
+          alertsBtn.disabled = false;
+        }
+      });
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') clearCallAlerts();
+    });
+    clearCallAlerts();
+    setupAlerts();
+
     setState('waiting');
     showStatus('');
     updateSwitches();
@@ -752,34 +834,5 @@
       for (const video of document.querySelectorAll('#tvTiles video')) video.play().catch(() => {});
     });
     startPolling();
-  }
-
-  // ---------- Sharing Mom's answer link ----------
-  async function shareMomLink() {
-    if (location.protocol !== 'https:') {
-      showStatus('Open the public HTTPS page before sharing Mom’s call link.');
-      return;
-    }
-    let url;
-    try {
-      const data = await getJSON('/api/mom-link');
-      url = new URL(data.path, location.href).href;
-    } catch (error) {
-      showStatus(error.message);
-      return;
-    }
-    try {
-      if (navigator.share) {
-        await navigator.share({title: 'Video call', text: 'Tap here to join a video call with me.', url});
-        showStatus('Call link shared.');
-      } else if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(url);
-        showStatus('Mom’s call link copied. Paste it into a text message.');
-      } else {
-        window.prompt('Copy this call link and text it to Mom:', url);
-      }
-    } catch (error) {
-      if (error.name !== 'AbortError') showStatus('Could not share the link: ' + error.message);
-    }
   }
 })();
